@@ -1,5 +1,3 @@
-/* #include "rep.h" */
-
 #include <stdio.h>
 #include <stdbool.h>
 #include <stdlib.h>
@@ -79,7 +77,7 @@ struct Token {
   TokenType type;
   size_t row, col;
   char c;
-  const Token *jmp;
+  size_t jmp;
 };
 
 DA_MAKE(Token, Tokens);
@@ -113,7 +111,7 @@ struct Op {
   OpType type;
   size_t count;
   const Token *t;
-  const Op *jmp;
+  size_t jmp;
 };
 
 typedef struct {
@@ -145,7 +143,7 @@ BF_DEF bool tokenizer_jump(Tokenizer *t, const Token *jmp);
 BF_DEF void print_token(Tokenizer *t);
 
 BF_DEF bool simulate_program(Tokenizer *t);
-BF_DEF bool compile_program_gas(Tokenizer *t);
+BF_DEF bool compile_program_fasm(Tokenizer *t);
 BF_DEF bool patch_tokenizer_jmp(Tokenizer *t);
 BF_DEF bool patch_token_jmp(Tokenizer *t);
 
@@ -215,8 +213,6 @@ int main(int argc, char **argv) {
       else output = *argv;
       def_out = false;
       out_len = strlen(output) + 1;
-      /* printf("output = %s\n", output); */
-      /* printf("out_len = %zu\n", out_len); */
     } else if (strcmp(*argv, "-c") == 0 ||
                strcmp(*argv, "--compile") == 0) compile = true;
     else if (strcmp(*argv, "-n") == 0 ||
@@ -235,29 +231,17 @@ int main(int argc, char **argv) {
              strcmp(*argv, "--dump-asm") == 0) dump_asm = true;
   }
 
-  /* def_out = strcmp(output, t.path) == 0; */
   if (def_out) change_ext();
   
-  /* const char *hello = "Hello, world!\n"; */
-  /* size_t length = strlen(hello); */
-  /* for (size_t i = 0; i < length; i++) { */
-  /*   printf("%d\n", hello[i]); */
-  /* } */
-  /* return 0; */
-
   if (!tokenize_file(&t)) return 1;
   if (compile) {
-    if (!compile_program_gas(&t)) return 1;
+    if (!compile_program_fasm(&t)) return 1;
     return 0;
   }
   if (opt) {
     Program prog = {0};
     if (!optimize_program(&t, &prog)) return 1;
     if (!simulate_optimized_program(&prog, &t)) return 1;
-    /* printf("\n\n--------------------------------------------------\n"); */
-    /* printf("prog.count = %zu\n", prog.count); */
-    /* printf("t.ts.count = %zu\n", t.ts.count); */
-    /* printf("--------------------------------------------------\n"); */
     return 0;
   }
   if (!simulate_program(&t)) return 1;
@@ -407,13 +391,13 @@ BF_DEF bool simulate_program(Tokenizer *t) {
       break;
     case LOOP_BGN:
       if (*t->p == 0) {
-        if (!tokenizer_jump(t, t->t->jmp)) return false;
+        if (!to_token(t, t->t->jmp)) return false;
         prev_token(t);
       }
       break;
     case LOOP_END:
       if (*t->p != 0) {
-        if (!tokenizer_jump(t, t->t->jmp)) return false;
+        if (!to_token(t, t->t->jmp)) return false;
         prev_token(t);
       }
       break;
@@ -427,16 +411,10 @@ BF_DEF bool simulate_program(Tokenizer *t) {
   return true;
 }
 
-BF_DEF bool compile_program_gas(Tokenizer *t) {
+BF_DEF bool compile_program_fasm(Tokenizer *t) {
   size_t out_s_len = out_len + 2;
-  /* if (!def_out) out_s_len++; */
-  if (def_out) {
-    out_s = malloc(out_s_len);
-    snprintf(out_s, out_s_len, "%s.s", output);
-  } else {
-    out_s = malloc(out_s_len);
-    snprintf(out_s, out_s_len, "%s.s", output);
-  }
+  out_s = malloc(out_s_len);
+  snprintf(out_s, out_s_len, "%s.s", output);
   FILE *f = fopen(out_s, "wb");
   if (f == NULL) {
     // Maybe do a better error reporting here?
@@ -456,7 +434,6 @@ BF_DEF bool compile_program_gas(Tokenizer *t) {
   patch_tokenizer_jmp(t);
   if (verbose) fprintf(f, ";; The pointer should start at 0.\n");
   fprintf(f, "%smov rbx,%s0\n", tab, spc);
-  size_t jmp = 0;
   while (true) {
     if (noisy)
       fprintf(f, ";; %s:%zu:%zu: %c\n", t->path, t->t->row, t->t->col, t->t->c);
@@ -520,9 +497,8 @@ BF_DEF bool compile_program_gas(Tokenizer *t) {
       fprintf(f, "%smov rax,%sQWORD [program+rbx]\n", tab, spc);
       if (extra_verbose) fprintf(f, "%s;; check byte 0 of `rax` (`al`), which had the current character moved to it.\n", tab);
       fprintf(f, "%stest al,%sal\n", tab, spc);
-      jmp = t->t->jmp - t->ts.items;
       if (verbose) fprintf(f, "%s;; if the current character is 0, jump to the ending of the loop.\n", tab);
-      fprintf(f, "%sjz addr_%zu\n", tab, jmp);
+      fprintf(f, "%sjz addr_%zu\n", tab, t->t->jmp);
       break;
     case LOOP_END:
       if (verbose) fprintf(f, "%s;; mark the address for the loop beginning to know where to jump.\n", tab);
@@ -531,9 +507,8 @@ BF_DEF bool compile_program_gas(Tokenizer *t) {
       fprintf(f, "%smov rax,%sQWORD [program+rbx]\n", tab, spc);
       if (extra_verbose) fprintf(f, "%s;; check byte 0 of `rax` (`al`), which had the current character moved to it.\n", tab);
       fprintf(f, "%stest al,%sal\n", tab, spc);
-      jmp = t->t->jmp - t->ts.items;
       if (verbose) fprintf(f, "%s;; if the current character isn't 0, jump to the beginning of the loop.\n", tab);
-      fprintf(f, "%sjnz addr_%zu\n", tab, jmp);
+      fprintf(f, "%sjnz addr_%zu\n", tab, t->t->jmp);
       break;
     case TOKEN_TYPES:
       diag_err(t, "%s", "Unreachable!\n");
@@ -592,13 +567,9 @@ BF_DEF bool patch_tokenizer_jmp(Tokenizer *t) {
 
   while (true) {
     if (t->t->type == LOOP_BGN) if (!patch_token_jmp(t)) return false;
-    /* else if (t->t->type == LOOP_END) if (!patch_token_lpe_jmp(t)) return false; */
-
     if (!next_token(t)) break;
   }
 
-  t->index = point;
-  t->t = t->ts.items + t->index;
   return to_token(t, point);
 }
 
@@ -607,7 +578,7 @@ BF_DEF bool patch_token_jmp(Tokenizer *t) {
   size_t lpe = 0;
   size_t point = t->index;
   
-  const Token *jmp = t->t;
+  size_t jmp = t->index;
 
   while (true) {
     if (t->t->type == LOOP_END) lpe++;
@@ -618,7 +589,7 @@ BF_DEF bool patch_token_jmp(Tokenizer *t) {
 
   t->t->jmp = jmp;
 
-  jmp = t->t;
+  jmp = t->index;
 
   if (!to_token(t, point)) return false;
   t->t->jmp = jmp;
@@ -857,13 +828,13 @@ BF_DEF bool simulate_optimized_program(Program *prog, Tokenizer *t) {
       break;
     case LOOP_BGN:
       if (*prog->p == 0) {
-        if (!program_jump(prog, prog->op->jmp)) return false;
+        if (!to_op(prog, prog->op->jmp)) return false;
         prev_op(prog);
       }
       break;
     case LOOP_END:
       if (*prog->p != 0) {
-        if (!program_jump(prog, prog->op->jmp)) return false;
+        if (!to_op(prog, prog->op->jmp)) return false;
         prev_op(prog);
       }
       break;
@@ -873,7 +844,7 @@ BF_DEF bool simulate_optimized_program(Program *prog, Tokenizer *t) {
     /* case R_ZERO: */
     /* case L_ZERO: */
     case OP_TYPES:
-      /* diag_err(t, "%s", "Unreachable!\n"); */
+      diag_err(t, "%s", "Unreachable!\n");
       return false;
     default: return false; break;
     }
@@ -901,7 +872,7 @@ BF_DEF bool patch_op_jmp(Program *prog) {
   size_t lpe = 0;
   size_t point = prog->index;
   
-  const Op *jmp = prog->op;
+  size_t jmp = prog->index;
 
   while (true) {
     if (prog->op->type == LOOP_END) lpe++;
@@ -912,7 +883,7 @@ BF_DEF bool patch_op_jmp(Program *prog) {
 
   prog->op->jmp = jmp;
 
-  jmp = prog->op;
+  jmp = prog->index;
 
   if (!to_op(prog, point)) return false;
   prog->op->jmp = jmp;
