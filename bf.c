@@ -102,8 +102,8 @@ typedef enum {
   LP_BGN, // Jump past the matching ] if the cell at the pointer is 0
   LP_END, // Jump back to the matching [ if the cell at the pointer is nonzero
   ZERO, // Custom operation, as an optimization.
-  /* R_ZERO, // Custom operation, as an optimization. */
-  /* L_ZERO, // Custom operation, as an optimization. */
+  R_ZERO, // Custom operation, as an optimization.
+  L_ZERO, // Custom operation, as an optimization.
   OP_TYPES,
 } OpType;
 
@@ -158,6 +158,13 @@ BF_DEF void accumulate_arithmetic(Tokenizer *t, Op *op);
 BF_DEF void optimize_loop(Tokenizer *t, Op *op);
 
 BF_DEF bool simulate_optimized_program(Program *prog, Tokenizer *t);
+BF_DEF bool gen_optimized_move_pointer(Program *prog, Tokenizer *t, FILE *f);
+BF_DEF void gen_optimized_arithmetic(Program *prog, Tokenizer *t, FILE *f);
+BF_DEF void gen_write(Program *prog, Tokenizer *t, FILE *f);
+BF_DEF void gen_read(Program *prog, Tokenizer *t, FILE *f);
+BF_DEF void gen_lp_bgn(Program *prog, Tokenizer *t, FILE *f);
+BF_DEF void gen_lp_end(Program *prog, Tokenizer *t, FILE *f);
+BF_DEF bool compile_optimized_program_fasm(Program *prog, Tokenizer *t);
 BF_DEF bool patch_program_jmp(Program *prog);
 BF_DEF bool patch_op_jmp(Program *prog);
 
@@ -182,6 +189,11 @@ bool extra_verbose = false; // Extra comments in assembly.
 bool readable = false; // Tabs for readability.
 bool run = false; // flag for running the file after compiling.
 bool dump_asm = false; // flag for dumping the assembly without compiling.
+
+size_t count = 0;
+size_t pointer = 0;
+const char *tab = "   ";
+const char *spc = " ";
 
 void change_ext(void) {
   out_len = strlen(output);
@@ -235,7 +247,11 @@ int main(int argc, char **argv) {
   
   if (!tokenize_file(&t)) return 1;
   if (compile) {
-    if (!compile_program_fasm(&t)) return 1;
+    if (opt) {
+      Program prog = {0};
+      if (!optimize_program(&t, &prog)) return 1;
+      if (!compile_optimized_program_fasm(&prog, &t)) return 1;
+    } else if (!compile_program_fasm(&t)) return 1;
     return 0;
   }
   if (opt) {
@@ -759,38 +775,42 @@ BF_DEF void accumulate_arithmetic(Tokenizer *t, Op *op) {
 
 BF_DEF void optimize_loop(Tokenizer *t, Op *op) {
   size_t point = t->index;
-  /* bool arithmetic = true; */
-  /* bool shift = true; */
-  bool simple = true;
+  bool arithmetic = true;
+  bool shift = true;
+  /* bool simple = true; */
   bool loop = true;
-  /* size_t r = 0, l = 0; */
-  /* while ((arithmetic || shift) && loop) { */
-  while (simple && loop) {
+  size_t r = 0, l = 0;
+  while ((arithmetic || shift) && loop) {
+  /* while (simple && loop) { */
+    if (!next_token(t)) break;
     switch (t->t->type) {
-    case RIGHT:
-    case LEFT:
+    /* case RIGHT: */
+    /* case LEFT: */
     case OUT:
     case IN:
-    /* case LOOP_BGN: arithmetic = false; shift = false; break; */
-    case LOOP_BGN: simple = false; break;
+    case LOOP_BGN: arithmetic = false; shift = false; break;
+    /* case LOOP_BGN: simple = false; break; */
     case LOOP_END: loop = false; break;
     case INC:
-    /* case DEC: shift = false; break; */
-    case DEC: break;
-    /* case RIGHT: arithmetic = false; r++; break; */
-    /* case LEFT: arithmetic = false; l++; break; */
+    case DEC: shift = false; break;
+    /* case DEC: break; */
+    case RIGHT: arithmetic = false; r++; break;
+    case LEFT: arithmetic = false; l++; break;
     }
-    if (!next_token(t)) break;
   }
 
-  
-  /* if (arithmetic) op->type = ZERO; */
-  if (simple) op->type = ZERO;
-  /* if (shift) { */
-  /*   if (r > l) op->type = R_ZERO; */
-  /*   else op->type = L_ZERO; */
-  /* } */
-  else to_token(t, point);
+  /* if (simple) op->type = ZERO; */
+  /* else to_token(t, point); */
+
+  if (arithmetic) op->type = ZERO;
+  else if (shift) {
+    bool right = r > l;
+    /* op->count = right ? r - l : l - r; */
+    if (!compile) {
+      if (right) op->type = R_ZERO;
+      else op->type = L_ZERO;
+    } else to_token(t, point);
+  } else to_token(t, point);
 }
 
 BF_DEF bool simulate_optimized_program(Program *prog, Tokenizer *t) {
@@ -841,8 +861,12 @@ BF_DEF bool simulate_optimized_program(Program *prog, Tokenizer *t) {
     case ZERO:
       (*prog->p) = 0;
       break;
-    /* case R_ZERO: */
-    /* case L_ZERO: */
+    case R_ZERO:
+      while (*prog->p) prog->p++;
+      break;
+    case L_ZERO:
+      while (*prog->p) prog->p--;
+      break;
     case OP_TYPES:
       diag_err(t, "%s", "Unreachable!\n");
       return false;
@@ -850,6 +874,186 @@ BF_DEF bool simulate_optimized_program(Program *prog, Tokenizer *t) {
     }
     if (!next_op(prog)) break;
   }
+  return true;
+}
+
+BF_DEF bool gen_optimized_move_pointer(Program *prog, Tokenizer *t, FILE *f) {
+  bool right = prog->op->type == R;
+  
+  if (verbose) fprintf(f, "%s;; %s `rbx`, which acts as the index, by %zu.\n", tab, right ? "increment" : "decrement", count);
+  fprintf(f, "%s%s rbx,%s%zu\n", tab, right ? "add" : "sub", spc, count);
+  pointer += count;
+  
+  if (pointer >= PROGRAM_SIZE) {
+    diag_err(t, "Stack overflow! The allocated array has only %d elements, no more!\n", PROGRAM_SIZE);
+    return false;
+  } else if (pointer < 0) {
+    diag_err(t, "%s", "Stack underflow! Cannot move pointer to before its starting point!\n");
+    return false;
+  }
+  
+  return true;
+}
+
+BF_DEF void gen_optimized_arithmetic(Program *prog, Tokenizer *t, FILE *f) {
+  bool add = prog->op->type == I;
+  if (verbose) fprintf(f, "%s;; read `program`, add the index (`rbx`), then %s the character read from there by %zu.\n", tab, add ? "increment" : "decrement", count);
+  fprintf(f, "%s%s [program+rbx],%s%zu\n", add ? "add" : "sub", tab, spc, count);
+  if (add) (*prog->p) += count;
+  else (*prog->p) -= count;
+}
+
+BF_DEF void gen_write(Program *prog, Tokenizer *t, FILE *f) {
+  if (extra_verbose) fprintf(f, "%s;; 1 is the index of the write syscall, so move 1 to `rax`.\n", tab);
+  fprintf(f, "%smov rax,%s1\n", tab, spc);
+  if (extra_verbose) fprintf(f, "%s;; 1 is the fd of stdout, so move 1 to `rdi`.\n", tab);
+  fprintf(f, "%smov rdi,%s1\n", tab, spc);
+  if (extra_verbose) fprintf(f, "%s;; the current character is stored at `program`, offset by the index (`rbx`), so load that address into `rsi`.\n", tab);
+  fprintf(f, "%slea rsi,%s[program+rbx]\n", tab, spc);
+  if (extra_verbose) fprintf(f, "%s;; printing the current character means printing 1 character, so move 1 to `rdx`.\n", tab);
+  fprintf(f, "%smov rdx,%s1\n", tab, spc);
+  if (verbose) fprintf(f, "%s;; call the write syscall, to print the current character to stdout.\n", tab);
+  fprintf(f, "%ssyscall\n", tab);
+}
+
+BF_DEF void gen_read(Program *prog, Tokenizer *t, FILE *f) {
+  if (extra_verbose) fprintf(f, "%s;; 0 is the index of the read syscall, so move 0 to `rax`.\n", tab);
+  fprintf(f, "%smov rax,%s0\n", tab, spc);
+  if (extra_verbose) fprintf(f, "%s;; 0 is the fd of stdin, so move 0 to `rdi`.\n", tab);
+  fprintf(f, "%smov rdi,%s0\n", tab, spc);
+  if (extra_verbose) fprintf(f, "%s;; the current character is stored at `program`, offset by the index (`rbx`), so load that address into `rsi`.\n", tab);
+  fprintf(f, "%slea rsi,%s[program+rbx]\n", tab, spc);
+  if (extra_verbose) fprintf(f, "%s;; reading into the current character means reading 1 character, so move 1 to `rdx`.\n", tab);
+  fprintf(f, "%smov rdx,%s1\n", tab, spc);
+  if (verbose) fprintf(f, "%s;; call the read syscall, to read into the current character from stdin.\n", tab);
+  fprintf(f, "%ssyscall\n", tab);
+}
+
+BF_DEF void gen_lp_bgn(Program *prog, Tokenizer *t, FILE *f) {
+  if (verbose) fprintf(f, "%s;; mark the address for the loop ending to know where to jump.\n", tab);
+  fprintf(f, "%saddr_%zu:\n", tab, prog->index);
+  if (extra_verbose) fprintf(f, "%s;; the current character is stored at `program`, offset by the index (`rbx`), so move the that to `rax`.\n", tab);
+  fprintf(f, "%smov rax,%sQWORD [program+rbx]\n", tab, spc);
+  if (extra_verbose) fprintf(f, "%s;; check byte 0 of `rax` (`al`), which had the current character moved to it.\n", tab);
+  fprintf(f, "%stest al,%sal\n", tab, spc);
+  if (verbose) fprintf(f, "%s;; if the current character is 0, jump to the ending of the loop.\n", tab);
+  fprintf(f, "%sjz addr_%zu\n", tab, prog->op->jmp);
+}
+
+BF_DEF void gen_lp_end(Program *prog, Tokenizer *t, FILE *f) {
+  if (verbose) fprintf(f, "%s;; mark the address for the loop beginning to know where to jump.\n", tab);
+  fprintf(f, "%saddr_%zu:\n", tab, prog->index);
+  if (extra_verbose) fprintf(f, "%s;; the current character is stored at `program`, offset by the index (`rbx`), so move the that to `rax`.\n", tab);
+  fprintf(f, "%smov rax,%sQWORD [program+rbx]\n", tab, spc);
+  if (extra_verbose) fprintf(f, "%s;; check byte 0 of `rax` (`al`), which had the current character moved to it.\n", tab);
+  fprintf(f, "%stest al,%sal\n", tab, spc);
+  if (verbose) fprintf(f, "%s;; if the current character isn't 0, jump to the beginning of the loop.\n", tab);
+  fprintf(f, "%sjnz addr_%zu\n", tab, prog->op->jmp);
+}
+
+BF_DEF bool compile_optimized_program_fasm(Program *prog, Tokenizer *t) {
+  size_t out_s_len = out_len + 2;
+  out_s = malloc(out_s_len);
+  snprintf(out_s, out_s_len, "%s.s", output);
+  FILE *f = fopen(out_s, "wb");
+  if (f == NULL) {
+    // Maybe do a better error reporting here?
+    fprintf(stderr, "Could not open file `%s`.\n", out_s);
+    if (f) fclose(f);
+    return false;
+  }
+  
+  tab = readable ? "   " : "";
+  spc = readable ? " " : "";
+
+  fprintf(f, "format ELF64 executable 3\nentry start\nstart:\n");
+
+  first_op(prog);
+  prog->p = program;
+  patch_program_jmp(prog);
+  size_t max = 0;
+  if (verbose) fprintf(f, ";; The pointer should start at 0.\n");
+  fprintf(f, "%smov rbx,%s0\n", tab, spc);
+  while (true) {
+    tokenizer_jump(t, prog->op->t);
+    count = prog->op->count;
+    prog->p = program + pointer;
+    if (pointer > max) max = pointer;
+    if (noisy)
+      fprintf(f, ";; %s:%zu:%zu: %c\n", t->path, t->t->row, t->t->col, t->t->c);
+    switch (prog->op->type) {
+    case RIGHT: 
+    case LEFT: if (!gen_optimized_move_pointer(prog, t, f)) return false; break;
+    case INC:
+    case DEC: gen_optimized_arithmetic(prog, t, f); break;
+    case OUT: gen_write(prog, t, f); break;
+    case IN: gen_read(prog, t, f); break;
+      break;
+    case LOOP_BGN: gen_lp_bgn(prog, t, f); break;
+    case LOOP_END: gen_lp_end(prog, t, f); break;
+      break;
+    case ZERO:
+      if (verbose) fprintf(f, "%s;; read `program`, add the index (`rbx`), then set it to 0.\n", tab);
+      fprintf(f, "%smov [program+rbx],%s0\n", tab, spc);
+      break;
+    case R_ZERO:
+    case L_ZERO:
+      gen_lp_bgn(prog, t, f);
+      OpType temp = prog->op->type;
+      prog->op->type -= R_ZERO;
+      if (!gen_optimized_move_pointer(prog, t, f)) return false;
+      gen_lp_end(prog, t, f);
+      prog->op->type = temp;
+      break;
+    case OP_TYPES:
+      diag_err(t, "%s", "Unreachable!\n");
+      return false;
+    default: return false; break;
+    }
+    if (!next_op(prog)) break;
+  }
+  
+  if (extra_verbose) fprintf(f, "%s;; 60 is the index of the exit syscall, so move 60 to `rax`.\n", tab);
+  fprintf(f, "%smov rax,%s60\n", tab, spc);
+    if (extra_verbose) fprintf(f, "%s;; exit code 0 indicates success, so move 0 to `rdi`.\n", tab);
+  fprintf(f, "%smov rdi,%s0\n", tab, spc);
+    if (verbose) fprintf(f, "%s;; call the exit syscall, with exit code 0, to indicate the program ran successfully and exited without error.\n", tab);
+  fprintf(f, "%ssyscall\n", tab);
+
+  fprintf(f, "segment readable writable\nprogram db %zu dup (0)", max);
+  fclose(f);
+  
+  if (noisy) printf("[INFO] successfully generated file `%.*s`\n", (int) (out_len + 2), out_s);
+  
+  if (dump_asm) return true;
+
+  // Compile the assembly.
+  const char *comp = "fasm -m 524288";
+  size_t comp_len = strlen(comp);
+  size_t command_len = out_s_len + comp_len + 1;
+  char *command = malloc(command_len);
+  snprintf(command, command_len, "%s %s", comp, out_s);
+  if (noisy) printf("[INFO] %s\n", command);
+  system(command);
+
+  // Find the name of the generated executable.
+  char *final_out = malloc(out_len);
+  snprintf(final_out, out_len, "%.*s", (int) out_len, output);
+
+  // Use chmod +x to make it executable.
+  const char *chmod_cmd = "chmod +x";
+  size_t chmod_cmd_len = strlen(chmod_cmd);
+  size_t cmd_len = chmod_cmd_len + 1 + out_len;
+  char *cmd = malloc(cmd_len);
+  snprintf(cmd, cmd_len, "%s %s", chmod_cmd, final_out);
+  if (noisy) printf("[INFO] %s\n", cmd);
+  system(cmd);
+  
+  if (run) {
+    if (noisy) printf("[INFO] %s\n", final_out);
+    system(final_out);
+  }
+  
   return true;
 }
 
