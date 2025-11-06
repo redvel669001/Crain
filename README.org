@@ -29,4 +29,9 @@ If you don't want this default behavior, either in terms of [crain] acting as an
 - `-r` or `--run`: if the Brainfuck source code has been compiled into a native executable file, run that file.
 - `-da` or `--dump-asm`: if the Brainfuck source code has been translated into assembly, do not go further to compile the assembly into a native executable file. This option is kinda useless at the moment, since the assembly files generated aren't automatically deleted, anyway.
 
-
+* Credits
+- bf_to_c.bf was taken from https://gist.github.com/roachhd/dce54bec8ba55fb17d3a
+- hello_world.bf was taken from https://gist.github.com/anilsathyan7/e06373fc1d1293fcaf2ef7765d415e62
+- main.bf was written by me
+- quine.bf was taken from https://esolangs.org/wiki/Brainfuck#Quine
+- test_case.bf was written by me
