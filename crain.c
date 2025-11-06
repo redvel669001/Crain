@@ -7,7 +7,7 @@
 
 #define BF_DEF static inline
 
-const char *name = "bf";
+const char *name = "crain";
 
 // Report with formatting.
 #define REPORTF(r, fmt, ...) report((r), __FILE__, __LINE__, 1, (fmt), __VA_ARGS__)
@@ -195,7 +195,7 @@ size_t pointer = 0;
 const char *tab = "   ";
 const char *spc = " ";
 
-void change_ext(void) {
+void remove_ext(void) {
   out_len = strlen(output);
   size_t final_dot = 0;
   for (size_t i = 0; i < out_len; i++) {
@@ -243,7 +243,7 @@ int main(int argc, char **argv) {
              strcmp(*argv, "--dump-asm") == 0) dump_asm = true;
   }
 
-  if (def_out) change_ext();
+  if (def_out) remove_ext();
   
   if (!tokenize_file(&t)) return 1;
   if (compile) {

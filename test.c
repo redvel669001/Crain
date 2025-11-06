@@ -26,7 +26,7 @@ size_t build_len;
 const char *src = "./tests/";
 size_t src_len;
 
-const char *compiler = "./build/bf";
+const char *compiler = "./crain";
 size_t c_len;
 
 char *cmd = NULL;
