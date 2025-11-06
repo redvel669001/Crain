@@ -9,6 +9,7 @@ typedef enum {
   TEST_CASE,
   /* BF_TO_C, */
   HELLO_WORLD,
+  HELLO_WORLD_TEST,
   TEST_NAMES,
 } TestName;
 
@@ -18,6 +19,7 @@ const char *tests[TEST_NAMES] = {
   "test_case",
   /* "bf_to_c", */
   "hello_world",
+  "hello_world_test",
 };
 
 const char *build = "./build/";
