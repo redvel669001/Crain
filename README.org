@@ -1,0 +1,31 @@
+#+author: RedVel
+#+name: README
+#+description: Some details about this repo.
+
+* Install
+Go to the root directory of this repository, then execute the following command:
+
+#+begin_src shell
+cc ./crain.c -o crain
+#+end_src
+
+Now you have your Brainfuck compiler and interpreter. It's fairly useless, but it can be pretty fun! I'm not 100% sure this will work on all Brainfuck source code, especially with optimizations, but it should be fine. :3
+
+* How to Use
+#+begin_src shell
+crain <input_path>.bf [FLAGS]
+#+end_src
+
+By default, [crain] will act as an interpreter. You can pass a flag to ask it to compile the Brainfuck source code to a native executable file. This option is only supported on linux, though. Its default behavior is as follows: write the assembly translation of the Brainfuck source code into <input_path>.s, then call `fasm` to compile it, resulting in a native executable file, <input_path>. 
+
+If you don't want this default behavior, either in terms of [crain] acting as an interpreter by default, or its default behavior when compiling, there are some flags to customize its behavior. Here is a list of flags you can  use with [crain]:
+- `-o <output_path>` or `--output <output_path>`: use a custom output path. With this flag, granted that it has been passed the flag to act as a compiler, [crain] will write the assembly translation of the Brainfuck source code into <output_path>.s, and if not given the flag to only dump the assembly, will call fasm to compile it, resulting in the native executable file, <output_path>.
+- `-c` or `--compile`: translate the Brainfuck source code into assembly, and if not given the flag to only dump the assembly, call fasm to compile the assembly into a native executable file.
+- `-n` or `--noisy`: for each Brainfuck instruction translated to assembly, write its origins in the Brainfuck source code (formatted as FILE:ROW:COL: INST) in a comment right above the assembly translation. Furthermore, print any command necessary, as well as notify a successful generation of the assembly translation of the Brainfuck source code.
+- `-v` or `--verbose`: for each Brainfuck instruction translated to assembly, write a simple explanation of the assembly translation, in a comment.
+- `-e` or `--extra-verbose`: same as the verbosity flag, but with even more explanations.
+- `-re` or `--readable`: add some spaces to the assembly translation, to make it easier to read.
+- `-r` or `--run`: if the Brainfuck source code has been compiled into a native executable file, run that file.
+- `-da` or `--dump-asm`: if the Brainfuck source code has been translated into assembly, do not go further to compile the assembly into a native executable file. This option is kinda useless at the moment, since the assembly files generated aren't automatically deleted, anyway.
+
+
