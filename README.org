@@ -2,6 +2,11 @@
 #+name: README
 #+description: Some details about this repo.
 
+* Table of Contents :toc:
+- [[#install][Install]]
+- [[#how-to-use][How to Use]]
+- [[#credits][Credits]]
+
 * Install
 Go to the root directory of this repository, then execute the following command:
 
