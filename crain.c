@@ -144,6 +144,13 @@ BF_DEF void print_token(Tokenizer *t);
 
 BF_DEF bool simulate_program(Tokenizer *t);
 BF_DEF bool compile_program_fasm(Tokenizer *t);
+BF_DEF bool gen_move_pointer_fasm(Tokenizer *t, FILE *f);
+BF_DEF void gen_arithmetic_fasm(Tokenizer *t, FILE *f);
+BF_DEF void gen_write_fasm(Tokenizer *t, FILE *f);
+BF_DEF void gen_read_fasm(Tokenizer *t, FILE *f);
+BF_DEF void gen_lp_bgn_fasm(Tokenizer *t, FILE *f, size_t jmp, size_t index);
+BF_DEF void gen_lp_end_fasm(Tokenizer *t, FILE *f, size_t jmp, size_t index);
+
 BF_DEF bool patch_tokenizer_jmp(Tokenizer *t);
 BF_DEF bool patch_token_jmp(Tokenizer *t);
 
@@ -158,12 +165,8 @@ BF_DEF void accumulate_arithmetic(Tokenizer *t, Op *op);
 BF_DEF void optimize_loop(Tokenizer *t, Op *op);
 
 BF_DEF bool simulate_optimized_program(Program *prog, Tokenizer *t);
-BF_DEF bool gen_optimized_move_pointer(Program *prog, Tokenizer *t, FILE *f);
-BF_DEF void gen_optimized_arithmetic(Program *prog, Tokenizer *t, FILE *f);
-BF_DEF void gen_write(Program *prog, Tokenizer *t, FILE *f);
-BF_DEF void gen_read(Program *prog, Tokenizer *t, FILE *f);
-BF_DEF void gen_lp_bgn(Program *prog, Tokenizer *t, FILE *f);
-BF_DEF void gen_lp_end(Program *prog, Tokenizer *t, FILE *f);
+BF_DEF bool gen_optimized_move_pointer_fasm(Program *prog, Tokenizer *t, FILE *f);
+BF_DEF void gen_optimized_arithmetic_fasm(Program *prog, Tokenizer *t, FILE *f);
 BF_DEF bool compile_optimized_program_fasm(Program *prog, Tokenizer *t);
 BF_DEF bool patch_program_jmp(Program *prog);
 BF_DEF bool patch_op_jmp(Program *prog);
@@ -369,8 +372,7 @@ BF_DEF bool tokenizer_jump(Tokenizer *t, const Token *jmp) {
 }
 
 BF_DEF void print_token(Tokenizer *t) {
-  printf("%s:%zu:%zu: token: %c\n",
-         t->path, t->t->row, t->t->col, t->t->c);
+  printf("%s:%zu:%zu: token: %c\n", t->path, t->t->row, t->t->col, t->t->c);
 }
 
 BF_DEF bool simulate_program(Tokenizer *t) {
@@ -393,18 +395,10 @@ BF_DEF bool simulate_program(Tokenizer *t) {
         return false;
       }
       break;
-    case INC:
-      (*t->p)++;
-      break;
-    case DEC:
-      (*t->p)--;
-      break;
-    case OUT:
-      putc((*t->p), stdout);
-      break;
-    case IN:
-      (*t->p) = getchar();
-      break;
+    case INC: (*t->p)++; break;
+    case DEC: (*t->p)--; break;
+    case OUT: putc((*t->p), stdout); break;
+    case IN: (*t->p) = getchar(); break;
     case LOOP_BGN:
       if (*t->p == 0) {
         if (!to_token(t, t->t->jmp)) return false;
@@ -417,9 +411,7 @@ BF_DEF bool simulate_program(Tokenizer *t) {
         prev_token(t);
       }
       break;
-    case TOKEN_TYPES:
-      diag_err(t, "%s", "Unreachable!\n");
-      return false;
+    case TOKEN_TYPES: diag_err(t, "%s", "Unreachable!\n"); return false;
     default: return false; break;
     }
     if (!next_token(t)) break;
@@ -455,80 +447,14 @@ BF_DEF bool compile_program_fasm(Tokenizer *t) {
       fprintf(f, ";; %s:%zu:%zu: %c\n", t->path, t->t->row, t->t->col, t->t->c);
     switch (t->t->type) {
     case RIGHT:
-      if (verbose)
-        fprintf(f, "%s;; increment `rbx`, which acts as the index.\n", tab);
-      fprintf(f, "%sinc rbx\n", tab);
-      pointer++;
-      if (pointer >= PROGRAM_SIZE) {
-        diag_err(t, "Stack overflow! The allocated array has only %d elements, no more!\n", PROGRAM_SIZE);
-        return false;
-      }
-      break;
-    case LEFT:
-      if (verbose)
-        fprintf(f, "%s;; decrement `rbx`, which acts as the index.\n", tab);
-      fprintf(f, "%sdec rbx\n", tab);
-      pointer--;
-      if (pointer < 0) {
-        diag_err(t, "%s", "Stack underflow! Cannot move pointer to before its starting point!\n");
-        return false;
-      }
-      break;
+    case LEFT: if (!gen_move_pointer_fasm(t, f)) return false; break;
     case INC:
-      if (verbose) fprintf(f, "%s;; read `program`, add the index (`rbx`), then increment the character read from there.\n", tab);
-      fprintf(f, "%sinc [program+rbx]\n", tab);
-      break;
-    case DEC:
-      if (verbose) fprintf(f, "%s;; read `program`, add the index (`rbx`), then decrement the character read from there.\n", tab);
-      fprintf(f, "%sdec [program+rbx]\n", tab);
-      break;
-    case OUT:
-      if (extra_verbose) fprintf(f, "%s;; 1 is the index of the write syscall, so move 1 to `rax`.\n", tab);
-      fprintf(f, "%smov rax,%s1\n", tab, spc);
-      if (extra_verbose) fprintf(f, "%s;; 1 is the fd of stdout, so move 1 to `rdi`.\n", tab);
-      fprintf(f, "%smov rdi,%s1\n", tab, spc);
-      if (extra_verbose) fprintf(f, "%s;; the current character is stored at `program`, offset by the index (`rbx`), so load that address into `rsi`.\n", tab);
-      fprintf(f, "%slea rsi,%s[program+rbx]\n", tab, spc);
-      if (extra_verbose) fprintf(f, "%s;; printing the current character means printing 1 character, so move 1 to `rdx`.\n", tab);
-      fprintf(f, "%smov rdx,%s1\n", tab, spc);
-      if (verbose) fprintf(f, "%s;; call the write syscall, to print the current character to stdout.\n", tab);
-      fprintf(f, "%ssyscall\n", tab);
-      break;
-    case IN:
-      if (extra_verbose) fprintf(f, "%s;; 0 is the index of the read syscall, so move 0 to `rax`.\n", tab);
-      fprintf(f, "%smov rax,%s0\n", tab, spc);
-      if (extra_verbose) fprintf(f, "%s;; 0 is the fd of stdin, so move 0 to `rdi`.\n", tab);
-      fprintf(f, "%smov rdi,%s0\n", tab, spc);
-      if (extra_verbose) fprintf(f, "%s;; the current character is stored at `program`, offset by the index (`rbx`), so load that address into `rsi`.\n", tab);
-      fprintf(f, "%slea rsi,%s[program+rbx]\n", tab, spc);
-      if (extra_verbose) fprintf(f, "%s;; reading into the current character means reading 1 character, so move 1 to `rdx`.\n", tab);
-      fprintf(f, "%smov rdx,%s1\n", tab, spc);
-      if (verbose) fprintf(f, "%s;; call the read syscall, to read into the current character from stdin.\n", tab);
-      fprintf(f, "%ssyscall\n", tab);
-      break;
-    case LOOP_BGN:
-      if (verbose) fprintf(f, "%s;; mark the address for the loop ending to know where to jump.\n", tab);
-      fprintf(f, "%saddr_%zu:\n", tab, t->index);
-      if (extra_verbose) fprintf(f, "%s;; the current character is stored at `program`, offset by the index (`rbx`), so move the that to `rax`.\n", tab);
-      fprintf(f, "%smov rax,%sQWORD [program+rbx]\n", tab, spc);
-      if (extra_verbose) fprintf(f, "%s;; check byte 0 of `rax` (`al`), which had the current character moved to it.\n", tab);
-      fprintf(f, "%stest al,%sal\n", tab, spc);
-      if (verbose) fprintf(f, "%s;; if the current character is 0, jump to the ending of the loop.\n", tab);
-      fprintf(f, "%sjz addr_%zu\n", tab, t->t->jmp);
-      break;
-    case LOOP_END:
-      if (verbose) fprintf(f, "%s;; mark the address for the loop beginning to know where to jump.\n", tab);
-      fprintf(f, "%saddr_%zu:\n", tab, t->index);
-      if (extra_verbose) fprintf(f, "%s;; the current character is stored at `program`, offset by the index (`rbx`), so move the that to `rax`.\n", tab);
-      fprintf(f, "%smov rax,%sQWORD [program+rbx]\n", tab, spc);
-      if (extra_verbose) fprintf(f, "%s;; check byte 0 of `rax` (`al`), which had the current character moved to it.\n", tab);
-      fprintf(f, "%stest al,%sal\n", tab, spc);
-      if (verbose) fprintf(f, "%s;; if the current character isn't 0, jump to the beginning of the loop.\n", tab);
-      fprintf(f, "%sjnz addr_%zu\n", tab, t->t->jmp);
-      break;
-    case TOKEN_TYPES:
-      diag_err(t, "%s", "Unreachable!\n");
-      return false;
+    case DEC: gen_arithmetic_fasm(t, f); break;
+    case OUT: gen_write_fasm(t, f); break;
+    case IN: gen_read_fasm(t, f); break;
+    case LOOP_BGN: gen_lp_bgn_fasm(t, f, t->t->jmp, t->index); break;
+    case LOOP_END: gen_lp_end_fasm(t, f, t->t->jmp, t->index); break;
+    case TOKEN_TYPES: diag_err(t, "%s", "Unreachable!\n"); return false;
     default: return false; break;
     }
     if (!next_token(t)) break;
@@ -576,6 +502,79 @@ BF_DEF bool compile_program_fasm(Tokenizer *t) {
   }
   
   return true;
+}
+
+BF_DEF bool gen_move_pointer_fasm(Tokenizer *t, FILE *f) {
+  bool right = t->t->type == RIGHT;
+  
+  if (verbose) fprintf(f, "%s;; %s `rbx`, which acts as the index.\n", tab, right ? "increment" : "decrement");
+  fprintf(f, "%s%s rbx\n", tab, right ? "inc" : "dec");
+  if (right) pointer++; else pointer--;
+  
+  if (pointer >= PROGRAM_SIZE) {
+    diag_err(t, "Stack overflow! The allocated array has only %d elements, no more!\n", PROGRAM_SIZE);
+    return false;
+  } else if (pointer < 0) {
+    diag_err(t, "%s", "Stack underflow! Cannot move pointer to before its starting point!\n");
+    return false;
+  }
+
+  return true;
+}
+
+BF_DEF void gen_arithmetic_fasm(Tokenizer *t, FILE *f) {
+  bool add = t->t->type == INC;
+  if (verbose) fprintf(f, "%s;; read `program`, add the index (`rbx`), then %s the character read from there.\n", tab, add ? "increment" : "decrement");
+  fprintf(f, "%s%s [program+rbx]\n", tab, add ? "inc" : "dec");
+  if (add) (*t->p)++; else (*t->p)--;
+}
+
+BF_DEF void gen_write_fasm(Tokenizer *t, FILE *f) {
+  if (extra_verbose) fprintf(f, "%s;; 1 is the index of the write syscall, so move 1 to `rax`.\n", tab);
+  fprintf(f, "%smov rax,%s1\n", tab, spc);
+  if (extra_verbose) fprintf(f, "%s;; 1 is the fd of stdout, so move 1 to `rdi`.\n", tab);
+  fprintf(f, "%smov rdi,%s1\n", tab, spc);
+  if (extra_verbose) fprintf(f, "%s;; the current character is stored at `program`, offset by the index (`rbx`), so load that address into `rsi`.\n", tab);
+  fprintf(f, "%slea rsi,%s[program+rbx]\n", tab, spc);
+  if (extra_verbose) fprintf(f, "%s;; printing the current character means printing 1 character, so move 1 to `rdx`.\n", tab);
+  fprintf(f, "%smov rdx,%s1\n", tab, spc);
+  if (verbose) fprintf(f, "%s;; call the write syscall, to print the current character to stdout.\n", tab);
+  fprintf(f, "%ssyscall\n", tab);
+}
+
+BF_DEF void gen_read_fasm(Tokenizer *t, FILE *f) {
+  if (extra_verbose) fprintf(f, "%s;; 0 is the index of the read syscall, so move 0 to `rax`.\n", tab);
+  fprintf(f, "%smov rax,%s0\n", tab, spc);
+  if (extra_verbose) fprintf(f, "%s;; 0 is the fd of stdin, so move 0 to `rdi`.\n", tab);
+  fprintf(f, "%smov rdi,%s0\n", tab, spc);
+  if (extra_verbose) fprintf(f, "%s;; the current character is stored at `program`, offset by the index (`rbx`), so load that address into `rsi`.\n", tab);
+  fprintf(f, "%slea rsi,%s[program+rbx]\n", tab, spc);
+  if (extra_verbose) fprintf(f, "%s;; reading into the current character means reading 1 character, so move 1 to `rdx`.\n", tab);
+  fprintf(f, "%smov rdx,%s1\n", tab, spc);
+  if (verbose) fprintf(f, "%s;; call the read syscall, to read into the current character from stdin.\n", tab);
+  fprintf(f, "%ssyscall\n", tab);
+}
+
+BF_DEF void gen_lp_bgn_fasm(Tokenizer *t, FILE *f, size_t jmp, size_t index) {
+  if (verbose) fprintf(f, "%s;; mark the address for the loop ending to know where to jump.\n", tab);
+  fprintf(f, "%saddr_%zu:\n", tab, index);
+  if (extra_verbose) fprintf(f, "%s;; the current character is stored at `program`, offset by the index (`rbx`), so move the that to `rax`.\n", tab);
+  fprintf(f, "%smov rax,%sQWORD [program+rbx]\n", tab, spc);
+  if (extra_verbose) fprintf(f, "%s;; check byte 0 of `rax` (`al`), which had the current character moved to it.\n", tab);
+  fprintf(f, "%stest al,%sal\n", tab, spc);
+  if (verbose) fprintf(f, "%s;; if the current character is 0, jump to the ending of the loop.\n", tab);
+  fprintf(f, "%sjz addr_%zu\n", tab, jmp);
+}
+
+BF_DEF void gen_lp_end_fasm(Tokenizer *t, FILE *f, size_t jmp, size_t index) {
+  if (verbose) fprintf(f, "%s;; mark the address for the loop beginning to know where to jump.\n", tab);
+  fprintf(f, "%saddr_%zu:\n", tab, index);
+  if (extra_verbose) fprintf(f, "%s;; the current character is stored at `program`, offset by the index (`rbx`), so move the that to `rax`.\n", tab);
+  fprintf(f, "%smov rax,%sQWORD [program+rbx]\n", tab, spc);
+  if (extra_verbose) fprintf(f, "%s;; check byte 0 of `rax` (`al`), which had the current character moved to it.\n", tab);
+  fprintf(f, "%stest al,%sal\n", tab, spc);
+  if (verbose) fprintf(f, "%s;; if the current character isn't 0, jump to the beginning of the loop.\n", tab);
+  fprintf(f, "%sjnz addr_%zu\n", tab, jmp);
 }
 
 BF_DEF bool patch_tokenizer_jmp(Tokenizer *t) {
@@ -777,38 +776,29 @@ BF_DEF void optimize_loop(Tokenizer *t, Op *op) {
   size_t point = t->index;
   bool arithmetic = true;
   bool shift = true;
-  /* bool simple = true; */
   bool loop = true;
   size_t r = 0, l = 0;
   while ((arithmetic || shift) && loop) {
-  /* while (simple && loop) { */
     if (!next_token(t)) break;
     switch (t->t->type) {
-    /* case RIGHT: */
-    /* case LEFT: */
     case OUT:
     case IN:
     case LOOP_BGN: arithmetic = false; shift = false; break;
-    /* case LOOP_BGN: simple = false; break; */
     case LOOP_END: loop = false; break;
     case INC:
     case DEC: shift = false; break;
-    /* case DEC: break; */
     case RIGHT: arithmetic = false; r++; break;
     case LEFT: arithmetic = false; l++; break;
     }
   }
 
-  /* if (simple) op->type = ZERO; */
-  /* else to_token(t, point); */
-
   if (arithmetic) op->type = ZERO;
   else if (shift) {
     bool right = r > l;
-    /* op->count = right ? r - l : l - r; */
     if (!compile) {
       if (right) op->type = R_ZERO;
       else op->type = L_ZERO;
+      op->count = right ? r - l : l - r;      
     } else to_token(t, point);
   } else to_token(t, point);
 }
@@ -834,18 +824,10 @@ BF_DEF bool simulate_optimized_program(Program *prog, Tokenizer *t) {
         return false;
       }
       break;
-    case INC:
-      (*prog->p) += prog->op->count;
-      break;
-    case DEC:
-      (*prog->p) -= prog->op->count;
-      break;
-    case OUT:
-      putc((*prog->p), stdout);
-      break;
-    case IN:
-      (*prog->p) = getchar();
-      break;
+    case INC: (*prog->p) += prog->op->count; break;
+    case DEC: (*prog->p) -= prog->op->count; break;
+    case OUT: putc((*prog->p), stdout); break;
+    case IN: (*prog->p) = getchar(); break;
     case LOOP_BGN:
       if (*prog->p == 0) {
         if (!to_op(prog, prog->op->jmp)) return false;
@@ -858,18 +840,10 @@ BF_DEF bool simulate_optimized_program(Program *prog, Tokenizer *t) {
         prev_op(prog);
       }
       break;
-    case ZERO:
-      (*prog->p) = 0;
-      break;
-    case R_ZERO:
-      while (*prog->p) prog->p++;
-      break;
-    case L_ZERO:
-      while (*prog->p) prog->p--;
-      break;
-    case OP_TYPES:
-      diag_err(t, "%s", "Unreachable!\n");
-      return false;
+    case ZERO: (*prog->p) = 0; break;
+    case R_ZERO: while (*prog->p) prog->p++; break;
+    case L_ZERO: while (*prog->p) prog->p--; break;
+    case OP_TYPES: diag_err(t, "%s", "Unreachable!\n"); return false;
     default: return false; break;
     }
     if (!next_op(prog)) break;
@@ -877,12 +851,12 @@ BF_DEF bool simulate_optimized_program(Program *prog, Tokenizer *t) {
   return true;
 }
 
-BF_DEF bool gen_optimized_move_pointer(Program *prog, Tokenizer *t, FILE *f) {
+BF_DEF bool gen_optimized_move_pointer_fasm(Program *prog, Tokenizer *t, FILE *f) {
   bool right = prog->op->type == R;
   
   if (verbose) fprintf(f, "%s;; %s `rbx`, which acts as the index, by %zu.\n", tab, right ? "increment" : "decrement", count);
   fprintf(f, "%s%s rbx,%s%zu\n", tab, right ? "add" : "sub", spc, count);
-  pointer += count;
+  if (right) pointer += count; else pointer -= count;
   
   if (pointer >= PROGRAM_SIZE) {
     diag_err(t, "Stack overflow! The allocated array has only %d elements, no more!\n", PROGRAM_SIZE);
@@ -895,60 +869,11 @@ BF_DEF bool gen_optimized_move_pointer(Program *prog, Tokenizer *t, FILE *f) {
   return true;
 }
 
-BF_DEF void gen_optimized_arithmetic(Program *prog, Tokenizer *t, FILE *f) {
+BF_DEF void gen_optimized_arithmetic_fasm(Program *prog, Tokenizer *t, FILE *f) {
   bool add = prog->op->type == I;
   if (verbose) fprintf(f, "%s;; read `program`, add the index (`rbx`), then %s the character read from there by %zu.\n", tab, add ? "increment" : "decrement", count);
-  fprintf(f, "%s%s [program+rbx],%s%zu\n", add ? "add" : "sub", tab, spc, count);
-  if (add) (*prog->p) += count;
-  else (*prog->p) -= count;
-}
-
-BF_DEF void gen_write(Program *prog, Tokenizer *t, FILE *f) {
-  if (extra_verbose) fprintf(f, "%s;; 1 is the index of the write syscall, so move 1 to `rax`.\n", tab);
-  fprintf(f, "%smov rax,%s1\n", tab, spc);
-  if (extra_verbose) fprintf(f, "%s;; 1 is the fd of stdout, so move 1 to `rdi`.\n", tab);
-  fprintf(f, "%smov rdi,%s1\n", tab, spc);
-  if (extra_verbose) fprintf(f, "%s;; the current character is stored at `program`, offset by the index (`rbx`), so load that address into `rsi`.\n", tab);
-  fprintf(f, "%slea rsi,%s[program+rbx]\n", tab, spc);
-  if (extra_verbose) fprintf(f, "%s;; printing the current character means printing 1 character, so move 1 to `rdx`.\n", tab);
-  fprintf(f, "%smov rdx,%s1\n", tab, spc);
-  if (verbose) fprintf(f, "%s;; call the write syscall, to print the current character to stdout.\n", tab);
-  fprintf(f, "%ssyscall\n", tab);
-}
-
-BF_DEF void gen_read(Program *prog, Tokenizer *t, FILE *f) {
-  if (extra_verbose) fprintf(f, "%s;; 0 is the index of the read syscall, so move 0 to `rax`.\n", tab);
-  fprintf(f, "%smov rax,%s0\n", tab, spc);
-  if (extra_verbose) fprintf(f, "%s;; 0 is the fd of stdin, so move 0 to `rdi`.\n", tab);
-  fprintf(f, "%smov rdi,%s0\n", tab, spc);
-  if (extra_verbose) fprintf(f, "%s;; the current character is stored at `program`, offset by the index (`rbx`), so load that address into `rsi`.\n", tab);
-  fprintf(f, "%slea rsi,%s[program+rbx]\n", tab, spc);
-  if (extra_verbose) fprintf(f, "%s;; reading into the current character means reading 1 character, so move 1 to `rdx`.\n", tab);
-  fprintf(f, "%smov rdx,%s1\n", tab, spc);
-  if (verbose) fprintf(f, "%s;; call the read syscall, to read into the current character from stdin.\n", tab);
-  fprintf(f, "%ssyscall\n", tab);
-}
-
-BF_DEF void gen_lp_bgn(Program *prog, Tokenizer *t, FILE *f) {
-  if (verbose) fprintf(f, "%s;; mark the address for the loop ending to know where to jump.\n", tab);
-  fprintf(f, "%saddr_%zu:\n", tab, prog->index);
-  if (extra_verbose) fprintf(f, "%s;; the current character is stored at `program`, offset by the index (`rbx`), so move the that to `rax`.\n", tab);
-  fprintf(f, "%smov rax,%sQWORD [program+rbx]\n", tab, spc);
-  if (extra_verbose) fprintf(f, "%s;; check byte 0 of `rax` (`al`), which had the current character moved to it.\n", tab);
-  fprintf(f, "%stest al,%sal\n", tab, spc);
-  if (verbose) fprintf(f, "%s;; if the current character is 0, jump to the ending of the loop.\n", tab);
-  fprintf(f, "%sjz addr_%zu\n", tab, prog->op->jmp);
-}
-
-BF_DEF void gen_lp_end(Program *prog, Tokenizer *t, FILE *f) {
-  if (verbose) fprintf(f, "%s;; mark the address for the loop beginning to know where to jump.\n", tab);
-  fprintf(f, "%saddr_%zu:\n", tab, prog->index);
-  if (extra_verbose) fprintf(f, "%s;; the current character is stored at `program`, offset by the index (`rbx`), so move the that to `rax`.\n", tab);
-  fprintf(f, "%smov rax,%sQWORD [program+rbx]\n", tab, spc);
-  if (extra_verbose) fprintf(f, "%s;; check byte 0 of `rax` (`al`), which had the current character moved to it.\n", tab);
-  fprintf(f, "%stest al,%sal\n", tab, spc);
-  if (verbose) fprintf(f, "%s;; if the current character isn't 0, jump to the beginning of the loop.\n", tab);
-  fprintf(f, "%sjnz addr_%zu\n", tab, prog->op->jmp);
+  fprintf(f, "%s%s [program+rbx],%s%zu\n", tab, add ? "add" : "sub", spc, count);
+  if (add) (*prog->p) += count; else (*prog->p) -= count;
 }
 
 BF_DEF bool compile_optimized_program_fasm(Program *prog, Tokenizer *t) {
@@ -983,31 +908,19 @@ BF_DEF bool compile_optimized_program_fasm(Program *prog, Tokenizer *t) {
       fprintf(f, ";; %s:%zu:%zu: %c\n", t->path, t->t->row, t->t->col, t->t->c);
     switch (prog->op->type) {
     case RIGHT: 
-    case LEFT: if (!gen_optimized_move_pointer(prog, t, f)) return false; break;
+    case LEFT: if (!gen_optimized_move_pointer_fasm(prog, t, f)) return false; break;
     case INC:
-    case DEC: gen_optimized_arithmetic(prog, t, f); break;
-    case OUT: gen_write(prog, t, f); break;
-    case IN: gen_read(prog, t, f); break;
-      break;
-    case LOOP_BGN: gen_lp_bgn(prog, t, f); break;
-    case LOOP_END: gen_lp_end(prog, t, f); break;
-      break;
+    case DEC: gen_optimized_arithmetic_fasm(prog, t, f); break;
+    case OUT: gen_write_fasm(t, f); break;
+    case IN: gen_read_fasm(t, f); break;
+    case LOOP_BGN: gen_lp_bgn_fasm(t, f, prog->op->jmp, prog->index); break;
+    case LOOP_END: gen_lp_end_fasm(t, f, prog->op->jmp, prog->index); break;
     case ZERO:
       if (verbose) fprintf(f, "%s;; read `program`, add the index (`rbx`), then set it to 0.\n", tab);
       fprintf(f, "%smov [program+rbx],%s0\n", tab, spc);
       break;
-    case R_ZERO:
-    case L_ZERO:
-      gen_lp_bgn(prog, t, f);
-      OpType temp = prog->op->type;
-      prog->op->type -= R_ZERO;
-      if (!gen_optimized_move_pointer(prog, t, f)) return false;
-      gen_lp_end(prog, t, f);
-      prog->op->type = temp;
-      break;
-    case OP_TYPES:
-      diag_err(t, "%s", "Unreachable!\n");
-      return false;
+    case R_ZERO: case L_ZERO: break; // These don't make sense when compiling.
+    case OP_TYPES: diag_err(t, "%s", "Unreachable!\n"); return false;
     default: return false; break;
     }
     if (!next_op(prog)) break;
