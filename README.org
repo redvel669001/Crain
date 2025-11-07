@@ -40,3 +40,5 @@ If you don't want this default behavior, either in terms of [crain] acting as an
 - main.bf was written by me
 - quine.bf was taken from https://esolangs.org/wiki/Brainfuck#Quine
 - test_case.bf was written by me
+- hello_world_test.bf was written by me.
+- hello_c.bf was written by me.
