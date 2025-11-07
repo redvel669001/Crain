@@ -10,6 +10,7 @@ typedef enum {
   /* BF_TO_C, */
   HELLO_WORLD,
   HELLO_WORLD_TEST,
+  HELLO_C,
   TEST_NAMES,
 } TestName;
 
@@ -20,6 +21,7 @@ const char *tests[TEST_NAMES] = {
   /* "bf_to_c", */
   "hello_world",
   "hello_world_test",
+  "hello_c",
 };
 
 const char *build = "./build/";
