@@ -3,11 +3,11 @@
 #+description: Some details about this repo.
 
 * Table of Contents :toc:
-- [[#install][Install]]
+- [[#build][Build]]
 - [[#how-to-use][How to Use]]
 - [[#credits][Credits]]
 
-* Install
+* Build
 Go to the root directory of this repository, then execute the following command:
 
 #+begin_src shell
