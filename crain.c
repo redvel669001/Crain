@@ -267,22 +267,22 @@ int main(int argc, char **argv) {
   if (def_out) remove_ext();
   
   if (!tokenize_file(&t)) return 1;
+  Program prog = {0};
+  if (opt) if (!optimize_program(&t, &prog)) return 1;
+  
   if (compile) {
     if (direct_to_binary) {
       if (!compile_program_elf(&t)) return 1;
     }
     else {
       if (opt) {
-        Program prog = {0};
-        if (!optimize_program(&t, &prog)) return 1;
         if (!compile_optimized_program_fasm(&prog, &t)) return 1;
       } else if (!compile_program_fasm(&t)) return 1;
     }
     return 0;
   }
+  
   if (opt) {
-    Program prog = {0};
-    if (!optimize_program(&t, &prog)) return 1;
     if (!simulate_optimized_program(&prog, &t)) return 1;
     return 0;
   }
@@ -534,72 +534,6 @@ BF_DEF bool compile_program_fasm(Tokenizer *t) {
 }
 
 BF_DEF bool compile_program_elf(Tokenizer *t) {
-  bool testing = false;
-  if (testing) {
-    const char *old = "./build/quine_old";
-    FILE *f = fopen(old, "rb");
-
-    if (f == NULL) {
-      fprintf(stderr, "Could not open file `%s`.\n", old);
-      if (f) fclose(f);
-      return false;
-    }
-
-    if (fseek(f, 0, SEEK_END) != 0) {
-      fprintf(stderr, "Could not seek to the end of file `%s`.\n", old);
-      fclose(f);
-      return false;
-    }
-  
-    long ffs = ftell(f);
-    if (ffs == -1) {
-      fprintf(stderr, "Could not measure size of file `%s`.\n", old);
-      fclose(f);
-      return false;
-    }
-
-    char *ft = malloc(ffs);
-    fseek(f, 0, SEEK_SET);
-    if (fread(ft, ffs, 1, f) == 0) {
-      fprintf(stderr, "Could not read file `%s`. It there was an error, or the file was empty.\n", old);
-    }
-
-    const char *new = "./build/quine";
-    FILE *g = fopen(new, "rb");
-    if (g == NULL) {
-      fprintf(stderr, "Could not open file `%s`.\n", new);
-      if (g) fclose(g);
-      return false;
-    }
-
-    if (fseek(g, 0, SEEK_END) != 0) {
-      fprintf(stderr, "Could not seek to the end of file `%s`.\n", new);
-      fclose(g);
-      return false;
-    }
-  
-    long gfs = ftell(g);
-    if (gfs == -1) {
-      fprintf(stderr, "Could not measure size of file `%s`.\n", new);
-      fclose(f);
-      return false;
-    }
-
-    char *gt = malloc(gfs);
-    fseek(g, 0, SEEK_SET);
-    if (fread(gt, gfs, 1, g) == 0) {
-      fprintf(stderr, "Could not read file `%s`. It there was an error, or the file was empty.\n", new);
-    }
-
-    if (ffs != gfs) {
-      printf("file sizes are not the same!\n");
-    }
-    /* for (long i = 0; i <  */
-
-    fclose(f);
-    fclose(g);
-    return true;
-  }
   FILE *f = fopen(output, "wb");
   if (f == NULL) {
     // Maybe do a better error reporting here?
