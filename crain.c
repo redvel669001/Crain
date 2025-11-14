@@ -33,7 +33,7 @@ const char *name = "crain";
 #define diag_note(to, fmt, ...)                                         \
   report(NOTE, (to)->path, (to)->t->row, (to)->t->col, (fmt), __VA_ARGS__)
 
-#define PROGRAM_SIZE 30000
+#define TAPE_SIZE 30000
 
 #define DA_INIT_CAPACITY 1024
 
@@ -188,7 +188,7 @@ BF_DEF bool prev_op(Program *prog);
 BF_DEF bool to_op(Program *prog, size_t index);
 BF_DEF bool program_jump(Program *prog, const Op *jmp);
 
-char program[PROGRAM_SIZE];
+char tape[TAPE_SIZE];
 bool opt = false;
 bool compile = false;
 bool direct_to_binary = false;
@@ -277,7 +277,6 @@ int main(int argc, char **argv) {
         if (!optimize_program(&t, &prog)) return 1;
         if (!compile_optimized_program_fasm(&prog, &t)) return 1;
       } else if (!compile_program_fasm(&t)) return 1;
-      /* if (!compile_program_fasm_(&t)) return 1; */
     }
     return 0;
   }
@@ -405,20 +404,20 @@ BF_DEF void print_token(Tokenizer *t) {
 
 BF_DEF bool simulate_program(Tokenizer *t) {
   first_token(t);
-  t->p = program;
+  t->p = tape;
   patch_tokenizer_jmp(t);
   while (true) {
     switch (t->t->type) {
     case RIGHT:
       t->p++;
-      if (t->p - program >= PROGRAM_SIZE) {
-        diag_err(t, "Stack overflow! The allocated array has only %d elements, no more!\n", PROGRAM_SIZE);
+      if (t->p - tape >= TAPE_SIZE) {
+        diag_err(t, "Stack overflow! The allocated array has only %d elements, no more!\n", TAPE_SIZE);
         return false;
       }
       break;
     case LEFT:
       t->p--;
-      if (t->p - program < 0) {
+      if (t->p - tape < 0) {
         diag_err(t, "%s", "Stack underflow! Cannot move pointer to before its starting point!\n");
         return false;
       }
@@ -466,10 +465,12 @@ BF_DEF bool compile_program_fasm(Tokenizer *t) {
   fprintf(f, "format ELF64 executable 3\nentry start\nstart:\n");
 
   first_token(t);
-  t->p = program;
+  t->p = tape;
   patch_tokenizer_jmp(t);
-  if (verbose) fprintf(f, ";; The pointer should start at 0.\n");
-  fprintf(f, "%smov rbx,%s0\n", tab, spc);
+  if (verbose) fprintf(f, ";; Make `rsi` point at the tape.\n");
+  fprintf(f, "%smov rsi,%stape\n", tab, spc);
+  if (verbose) fprintf(f, ";; Reads and writes operate on only one character, so just move 1 to rdx once and for all.\n");
+  fprintf(f, "%smov rdx,%s1\n", tab, spc);
   while (true) {
     if (noisy)
       fprintf(f, ";; %s:%zu:%zu: %c\n", t->path, t->t->row, t->t->col, t->t->c);
@@ -495,7 +496,7 @@ BF_DEF bool compile_program_fasm(Tokenizer *t) {
     if (verbose) fprintf(f, "%s;; call the exit syscall, with exit code 0, to indicate the program ran successfully and exited without error.\n", tab);
   fprintf(f, "%ssyscall\n", tab);
 
-  fprintf(f, "segment readable writable\nprogram db %d dup (0)", PROGRAM_SIZE);
+  fprintf(f, "segment readable writable\ntape db %d dup (0)", TAPE_SIZE);
   fclose(f);
   
   if (noisy) printf("[INFO] successfully generated file `%.*s`\n", (int) (out_len + 2), out_s);
@@ -646,7 +647,7 @@ BF_DEF bool compile_program_elf(Tokenizer *t) {
     .p_align = 0x1000,             /* Segment alignment */
   };
 
-  Elf64_Phdr tape = {
+  Elf64_Phdr thdr = {
     .p_type = PT_LOAD,      /* Segment type */
     .p_offset = 0,          /* Segment file offset */
     .p_vaddr = 0x401000,    /* Segment virtual address */
@@ -675,7 +676,7 @@ BF_DEF bool compile_program_elf(Tokenizer *t) {
   
   size_t pointer = 0;
   first_token(t);
-  t->p = program;
+  t->p = tape;
   patch_tokenizer_jmp(t);
   patch_tokenizer_jmp_for_binary(t);
 
@@ -763,12 +764,12 @@ BF_DEF bool compile_program_elf(Tokenizer *t) {
   entry.p_memsz = entry.p_filesz;
 
   // patch tape.vaddr
-  tape.p_vaddr += entry.p_filesz;
-  tape.p_paddr = tape.p_vaddr;
-  tape.p_offset = entry.p_filesz;
+  thdr.p_vaddr += entry.p_filesz;
+  thdr.p_paddr = thdr.p_vaddr;
+  thdr.p_offset = entry.p_filesz;
 
   // patch the pointer to the tape.
-  size_t tape_pointer = tape.p_vaddr;
+  size_t tape_pointer = thdr.p_vaddr;
   for (size_t i = 0; i < 4; i++) {
     start.items[3 + i] = (tape_pointer >> (i * 8)) & 0xFF;
   }
@@ -780,8 +781,8 @@ BF_DEF bool compile_program_elf(Tokenizer *t) {
     return false;
   }
   
-  s = fwrite(&tape, 1, sizeof(tape), f);
-  if (s != sizeof(tape)) {
+  s = fwrite(&thdr, 1, sizeof(thdr), f);
+  if (s != sizeof(thdr)) {
     printf("tape?\n");
     perror("fwrite");
     return false;
@@ -801,8 +802,8 @@ BF_DEF bool compile_program_elf(Tokenizer *t) {
     return false;
   }
 
-  s = fwrite(program, 1, PROGRAM_SIZE, f);
-  if (s != PROGRAM_SIZE) {
+  s = fwrite(tape, 1, TAPE_SIZE, f);
+  if (s != TAPE_SIZE) {
     printf("tape?\n");
     perror("fwrite");
     return false;
@@ -839,12 +840,12 @@ BF_DEF bool compile_program_elf(Tokenizer *t) {
 BF_DEF bool gen_move_pointer_fasm(Tokenizer *t, FILE *f) {
   bool right = t->t->type == RIGHT;
   
-  if (verbose) fprintf(f, "%s;; %s `rbx`, which acts as the index.\n", tab, right ? "increment" : "decrement");
-  fprintf(f, "%s%s rbx\n", tab, right ? "inc" : "dec");
+  if (verbose) fprintf(f, "%s;; %s rsi, which points at the tape.\n", tab, right ? "increment" : "decrement");
+  fprintf(f, "%s%s rsi\n", tab, right ? "inc" : "dec");
   if (right) pointer++; else pointer--;
   
-  if (pointer >= PROGRAM_SIZE) {
-    diag_err(t, "Stack overflow! The allocated array has only %d elements, no more!\n", PROGRAM_SIZE);
+  if (pointer >= TAPE_SIZE) {
+    diag_err(t, "Stack overflow! The allocated array has only %d elements, no more!\n", TAPE_SIZE);
     return false;
   } else if (pointer < 0) {
     diag_err(t, "%s", "Stack underflow! Cannot move pointer to before its starting point!\n");
@@ -856,8 +857,8 @@ BF_DEF bool gen_move_pointer_fasm(Tokenizer *t, FILE *f) {
 
 BF_DEF void gen_arithmetic_fasm(Tokenizer *t, FILE *f) {
   bool add = t->t->type == INC;
-  if (verbose) fprintf(f, "%s;; read `program`, add the index (`rbx`), then %s the character read from there.\n", tab, add ? "increment" : "decrement");
-  fprintf(f, "%s%s [program+rbx]\n", tab, add ? "inc" : "dec");
+  if (verbose) fprintf(f, "%s;; %s the current character.\n", tab, add ? "increment" : "decrement");
+  fprintf(f, "%s%s byte%s[rsi]\n", tab, add ? "inc" : "dec", spc);
   if (add) (*t->p)++; else (*t->p)--;
 }
 
@@ -866,10 +867,8 @@ BF_DEF void gen_write_fasm(Tokenizer *t, FILE *f) {
   fprintf(f, "%smov rax,%s1\n", tab, spc);
   if (extra_verbose) fprintf(f, "%s;; 1 is the fd of stdout, so move 1 to `rdi`.\n", tab);
   fprintf(f, "%smov rdi,%s1\n", tab, spc);
-  if (extra_verbose) fprintf(f, "%s;; the current character is stored at `program`, offset by the index (`rbx`), so load that address into `rsi`.\n", tab);
-  fprintf(f, "%slea rsi,%s[program+rbx]\n", tab, spc);
-  if (extra_verbose) fprintf(f, "%s;; printing the current character means printing 1 character, so move 1 to `rdx`.\n", tab);
-  fprintf(f, "%smov rdx,%s1\n", tab, spc);
+  if (extra_verbose) fprintf(f, "%s;; `rsi` already points at the tape, so nothing needs to be done about it, hence its absence.\n", tab);
+  if (extra_verbose) fprintf(f, "%s;; `rdx` has already been set to one, so no need to change it here, hence its absence.\n", tab);
   if (verbose) fprintf(f, "%s;; call the write syscall, to print the current character to stdout.\n", tab);
   fprintf(f, "%ssyscall\n", tab);
 }
@@ -879,10 +878,8 @@ BF_DEF void gen_read_fasm(Tokenizer *t, FILE *f) {
   fprintf(f, "%smov rax,%s0\n", tab, spc);
   if (extra_verbose) fprintf(f, "%s;; 0 is the fd of stdin, so move 0 to `rdi`.\n", tab);
   fprintf(f, "%smov rdi,%s0\n", tab, spc);
-  if (extra_verbose) fprintf(f, "%s;; the current character is stored at `program`, offset by the index (`rbx`), so load that address into `rsi`.\n", tab);
-  fprintf(f, "%slea rsi,%s[program+rbx]\n", tab, spc);
-  if (extra_verbose) fprintf(f, "%s;; reading into the current character means reading 1 character, so move 1 to `rdx`.\n", tab);
-  fprintf(f, "%smov rdx,%s1\n", tab, spc);
+  if (extra_verbose) fprintf(f, "%s;; `rsi` already points at the tape, so nothing needs to be done about it, hence its absence.\n", tab);
+  if (extra_verbose) fprintf(f, "%s;; `rdx` has already been set to one, so no need to change it here, hence its absence.\n", tab);
   if (verbose) fprintf(f, "%s;; call the read syscall, to read into the current character from stdin.\n", tab);
   fprintf(f, "%ssyscall\n", tab);
 }
@@ -890,8 +887,8 @@ BF_DEF void gen_read_fasm(Tokenizer *t, FILE *f) {
 BF_DEF void gen_lp_bgn_fasm(Tokenizer *t, FILE *f, size_t jmp, size_t index) {
   if (verbose) fprintf(f, "%s;; mark the address for the loop ending to know where to jump.\n", tab);
   fprintf(f, "%saddr_%zu:\n", tab, index);
-  if (extra_verbose) fprintf(f, "%s;; the current character is stored at `program`, offset by the index (`rbx`), so move the that to `rax`.\n", tab);
-  fprintf(f, "%smov rax,%sQWORD [program+rbx]\n", tab, spc);
+  if (extra_verbose) fprintf(f, "%s;; mov the current character to `rax`.\n", tab);
+  fprintf(f, "%smov rax,%sQWORD%s[rsi]\n", tab, spc, spc);
   if (extra_verbose) fprintf(f, "%s;; check byte 0 of `rax` (`al`), which had the current character moved to it.\n", tab);
   fprintf(f, "%stest al,%sal\n", tab, spc);
   if (verbose) fprintf(f, "%s;; if the current character is 0, jump to the ending of the loop.\n", tab);
@@ -901,8 +898,8 @@ BF_DEF void gen_lp_bgn_fasm(Tokenizer *t, FILE *f, size_t jmp, size_t index) {
 BF_DEF void gen_lp_end_fasm(Tokenizer *t, FILE *f, size_t jmp, size_t index) {
   if (verbose) fprintf(f, "%s;; mark the address for the loop beginning to know where to jump.\n", tab);
   fprintf(f, "%saddr_%zu:\n", tab, index);
-  if (extra_verbose) fprintf(f, "%s;; the current character is stored at `program`, offset by the index (`rbx`), so move the that to `rax`.\n", tab);
-  fprintf(f, "%smov rax,%sQWORD [program+rbx]\n", tab, spc);
+  if (extra_verbose) fprintf(f, "%s;; mov the current character to `rax`.\n", tab);
+  fprintf(f, "%smov rax,%sQWORD%s[rsi]\n", tab, spc, spc);
   if (extra_verbose) fprintf(f, "%s;; check byte 0 of `rax` (`al`), which had the current character moved to it.\n", tab);
   fprintf(f, "%stest al,%sal\n", tab, spc);
   if (verbose) fprintf(f, "%s;; if the current character isn't 0, jump to the beginning of the loop.\n", tab);
@@ -1177,21 +1174,21 @@ BF_DEF void optimize_loop(Tokenizer *t, Op *op) {
 
 BF_DEF bool simulate_optimized_program(Program *prog, Tokenizer *t) {
   first_op(prog);
-  prog->p = program;
+  prog->p = tape;
   patch_program_jmp(prog);
   while (true) {
     tokenizer_jump(t, prog->op->t);
     switch (prog->op->type) {
     case RIGHT:
       prog->p += prog->op->count;
-      if (prog->p - program >= PROGRAM_SIZE) {
-        diag_err(t, "Stack overflow! The allocated array has only %d elements, no more!\n", PROGRAM_SIZE);
+      if (prog->p - tape >= TAPE_SIZE) {
+        diag_err(t, "Stack overflow! The allocated array has only %d elements, no more!\n", TAPE_SIZE);
         return false;
       }
       break;
     case LEFT:
       prog->p -= prog->op->count;
-      if (prog->p - program < 0) {
+      if (prog->p - tape < 0) {
         diag_err(t, "%s", "Stack underflow! Cannot move pointer to before its starting point!\n");
         return false;
       }
@@ -1226,12 +1223,12 @@ BF_DEF bool simulate_optimized_program(Program *prog, Tokenizer *t) {
 BF_DEF bool gen_optimized_move_pointer_fasm(Program *prog, Tokenizer *t, FILE *f) {
   bool right = prog->op->type == R;
   
-  if (verbose) fprintf(f, "%s;; %s `rbx`, which acts as the index, by %zu.\n", tab, right ? "increment" : "decrement", count);
-  fprintf(f, "%s%s rbx,%s%zu\n", tab, right ? "add" : "sub", spc, count);
+  if (verbose) fprintf(f, "%s;; %s rsi, which points to the tape, by %zu.\n", tab, right ? "increment" : "decrement", count);
+  fprintf(f, "%s%s rsi,%s%zu\n", tab, right ? "add" : "sub", spc, count);
   if (right) pointer += count; else pointer -= count;
   
-  if (pointer >= PROGRAM_SIZE) {
-    diag_err(t, "Stack overflow! The allocated array has only %d elements, no more!\n", PROGRAM_SIZE);
+  if (pointer >= TAPE_SIZE) {
+    diag_err(t, "Stack overflow! The allocated array has only %d elements, no more!\n", TAPE_SIZE);
     return false;
   } else if (pointer < 0) {
     diag_err(t, "%s", "Stack underflow! Cannot move pointer to before its starting point!\n");
@@ -1243,8 +1240,8 @@ BF_DEF bool gen_optimized_move_pointer_fasm(Program *prog, Tokenizer *t, FILE *f
 
 BF_DEF void gen_optimized_arithmetic_fasm(Program *prog, Tokenizer *t, FILE *f) {
   bool add = prog->op->type == I;
-  if (verbose) fprintf(f, "%s;; read `program`, add the index (`rbx`), then %s the character read from there by %zu.\n", tab, add ? "increment" : "decrement", count);
-  fprintf(f, "%s%s [program+rbx],%s%zu\n", tab, add ? "add" : "sub", spc, count);
+  if (verbose) fprintf(f, "%s;; %s the current character by %zu.\n", tab, add ? "increment" : "decrement", count);
+  fprintf(f, "%s%s byte%s[rsi],%s%zu\n", tab, add ? "add" : "sub", spc, spc, count);
   if (add) (*prog->p) += count; else (*prog->p) -= count;
 }
 
@@ -1266,15 +1263,17 @@ BF_DEF bool compile_optimized_program_fasm(Program *prog, Tokenizer *t) {
   fprintf(f, "format ELF64 executable 3\nentry start\nstart:\n");
 
   first_op(prog);
-  prog->p = program;
+  prog->p = tape;
   patch_program_jmp(prog);
   size_t max = 0;
-  if (verbose) fprintf(f, ";; The pointer should start at 0.\n");
-  fprintf(f, "%smov rbx,%s0\n", tab, spc);
+  if (verbose) fprintf(f, ";; Make rsi point at the tape.\n");
+  fprintf(f, "%smov rsi,%stape\n", tab, spc);
+  if (verbose) fprintf(f, ";; Reads and writes operate on only one character, so just move 1 to rdx once and for all.\n");
+  fprintf(f, "%smov rdx,%s1\n", tab, spc);
   while (true) {
     tokenizer_jump(t, prog->op->t);
     count = prog->op->count;
-    prog->p = program + pointer;
+    prog->p = tape + pointer;
     if (pointer > max) max = pointer;
     if (noisy)
       fprintf(f, ";; %s:%zu:%zu: %c\n", t->path, t->t->row, t->t->col, t->t->c);
@@ -1288,8 +1287,8 @@ BF_DEF bool compile_optimized_program_fasm(Program *prog, Tokenizer *t) {
     case LOOP_BGN: gen_lp_bgn_fasm(t, f, prog->op->jmp, prog->index); break;
     case LOOP_END: gen_lp_end_fasm(t, f, prog->op->jmp, prog->index); break;
     case ZERO:
-      if (verbose) fprintf(f, "%s;; read `program`, add the index (`rbx`), then set it to 0.\n", tab);
-      fprintf(f, "%smov [program+rbx],%s0\n", tab, spc);
+      if (verbose) fprintf(f, "%s;; Set the current character to 0.\n", tab);
+      fprintf(f, "%smov byte%s[rsi],%s0\n", tab, spc, spc);
       break;
     case R_ZERO: case L_ZERO: break; // These don't make sense when compiling.
     case OP_TYPES: diag_err(t, "%s", "Unreachable!\n"); return false;
@@ -1305,7 +1304,7 @@ BF_DEF bool compile_optimized_program_fasm(Program *prog, Tokenizer *t) {
     if (verbose) fprintf(f, "%s;; call the exit syscall, with exit code 0, to indicate the program ran successfully and exited without error.\n", tab);
   fprintf(f, "%ssyscall\n", tab);
 
-  fprintf(f, "segment readable writable\nprogram db %zu dup (0)", max);
+  fprintf(f, "segment readable writable\ntape db %zu dup (0)", max);
   fclose(f);
   
   if (noisy) printf("[INFO] successfully generated file `%.*s`\n", (int) (out_len + 2), out_s);
