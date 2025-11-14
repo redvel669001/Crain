@@ -33,6 +33,7 @@ If you don't want this default behavior, either in terms of [crain] acting as an
 - `-re` or `--readable`: add some spaces to the assembly translation, to make it easier to read.
 - `-r` or `--run`: if the Brainfuck source code has been compiled into a native executable file, run that file.
 - `-da` or `--dump-asm`: if the Brainfuck source code has been translated into assembly, do not go further to compile the assembly into a native executable file. This option is kinda useless at the moment, since the assembly files generated aren't automatically deleted, anyway.
+- `-b` or `--binary`: generate a binary ELF file without using fasm. With this flag, [crain] will translate the Brainfuck source code directly into a binary ELF file, rather than translate it to assembly and then use fasm to compile the assembly into binary.
 
 * Credits
 - bf_to_c.bf was taken from https://gist.github.com/roachhd/dce54bec8ba55fb17d3a
