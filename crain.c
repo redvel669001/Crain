@@ -158,6 +158,10 @@ BF_DEF void gen_read_fasm(Tokenizer *t, FILE *f);
 BF_DEF void gen_lp_bgn_fasm(Tokenizer *t, FILE *f, size_t jmp, size_t index);
 BF_DEF void gen_lp_end_fasm(Tokenizer *t, FILE *f, size_t jmp, size_t index);
 
+BF_DEF Elf64_Ehdr gen_elf_header(void);
+BF_DEF Elf64_Phdr gen_elf_entry_program_header(void);
+BF_DEF Elf64_Phdr gen_elf_tape_program_header(void);
+
 BF_DEF bool patch_tokenizer_jmp(Tokenizer *t);
 BF_DEF void patch_tokenizer_jmp_for_binary(Tokenizer *t);
 BF_DEF bool patch_token_jmp(Tokenizer *t);
@@ -542,55 +546,10 @@ BF_DEF bool compile_program_elf(Tokenizer *t) {
     return false;
   }
 
-  // Generate header and stuff.
-  Elf64_Ehdr elfh = {
-    .e_ident = {
-      ELFMAG0,
-      ELFMAG1,
-      ELFMAG2,
-      ELFMAG3,
-      ELFCLASS64,
-      ELFDATA2LSB,
-      EV_CURRENT,
-      ELFOSABI_LINUX,
-      0, 0, 0, 0, 0, 0, 0, 0//, EI_NIDENT
-    },                       /* Magic number and other info */
-    .e_type = ET_EXEC,       /* Object file type */
-    .e_machine = EM_X86_64,  /* Architecture */
-    .e_version = EV_CURRENT, /* Object file version */
-    .e_entry = 0x4000b0,     /* Entry point virtual address */
-    .e_phoff = 64,           /* Program header table file offset */
-    .e_shoff = 0,            /* Section header table file offset */
-    .e_flags = 0,            /* Processor-specific flags */
-    .e_ehsize = 64,          /* ELF header size in bytes */
-    .e_phentsize = 56,       /* Program header table entry size */
-    .e_phnum = 2,            /* Program header table entry count */
-    .e_shentsize = 64,        /* Section header table entry size */
-    .e_shnum = 0,            /* Section header table entry count */
-    .e_shstrndx = SHN_UNDEF, /* Section header string table index */
-  };
-
-  Elf64_Phdr entry = {
-    .p_type = PT_LOAD,             /* Segment type */
-    .p_offset = 0,                 /* Segment file offset */
-    .p_vaddr = 0x400000,           /* Segment virtual address */
-    .p_paddr = 0x400000,           /* Segment physical address */
-    .p_filesz = 0x1bea,            /* Segment size in file */
-    .p_memsz = 0x1bea,             /* Segment size in memory */
-    .p_flags = PF_X | PF_W | PF_R, /* Segment flags */
-    .p_align = 0x1000,             /* Segment alignment */
-  };
-
-  Elf64_Phdr thdr = {
-    .p_type = PT_LOAD,      /* Segment type */
-    .p_offset = 0,          /* Segment file offset */
-    .p_vaddr = 0x401000,    /* Segment virtual address */
-    .p_paddr = 0x401000,    /* Segment physical address */
-    .p_filesz = 0x7530,     /* Segment size in file */
-    .p_memsz = 0x7530,      /* Segment size in memory */
-    .p_flags = PF_W | PF_R, /* Segment flags */
-    .p_align = 0x1000,      /* Segment alignment */
-  };
+  // Mandatory headers.
+  Elf64_Ehdr elfh = gen_elf_header();
+  Elf64_Phdr entry = gen_elf_entry_program_header();
+  Elf64_Phdr thdr = gen_elf_tape_program_header();
 
   size_t s = fwrite(&elfh, 1, sizeof(elfh), f);
   if (s != sizeof(elfh)) {
@@ -838,6 +797,61 @@ BF_DEF void gen_lp_end_fasm(Tokenizer *t, FILE *f, size_t jmp, size_t index) {
   fprintf(f, "%stest al,%sal\n", tab, spc);
   if (verbose) fprintf(f, "%s;; if the current character isn't 0, jump to the beginning of the loop.\n", tab);
   fprintf(f, "%sjnz addr_%zu\n", tab, jmp);
+}
+
+BF_DEF Elf64_Ehdr gen_elf_header(void) {
+  return (Elf64_Ehdr) {
+    .e_ident = {
+      ELFMAG0,
+      ELFMAG1,
+      ELFMAG2,
+      ELFMAG3,
+      ELFCLASS64,
+      ELFDATA2LSB,
+      EV_CURRENT,
+      ELFOSABI_LINUX,
+      0, 0, 0, 0, 0, 0, 0, 0//, EI_NIDENT
+    },                       /* Magic number and other info */
+    .e_type = ET_EXEC,       /* Object file type */
+    .e_machine = EM_X86_64,  /* Architecture */
+    .e_version = EV_CURRENT, /* Object file version */
+    .e_entry = 0x4000b0,     /* Entry point virtual address */
+    .e_phoff = 64,           /* Program header table file offset */
+    .e_shoff = 0,            /* Section header table file offset */
+    .e_flags = 0,            /* Processor-specific flags */
+    .e_ehsize = 64,          /* ELF header size in bytes */
+    .e_phentsize = 56,       /* Program header table entry size */
+    .e_phnum = 2,            /* Program header table entry count */
+    .e_shentsize = 64,        /* Section header table entry size */
+    .e_shnum = 0,            /* Section header table entry count */
+    .e_shstrndx = SHN_UNDEF, /* Section header string table index */
+  };
+}
+
+BF_DEF Elf64_Phdr gen_elf_entry_program_header(void) {
+  return (Elf64_Phdr) {
+    .p_type = PT_LOAD,             /* Segment type */
+    .p_offset = 0,                 /* Segment file offset */
+    .p_vaddr = 0x400000,           /* Segment virtual address */
+    .p_paddr = 0x400000,           /* Segment physical address */
+    .p_filesz = 0x1bea,            /* Segment size in file */
+    .p_memsz = 0x1bea,             /* Segment size in memory */
+    .p_flags = PF_X | PF_W | PF_R, /* Segment flags */
+    .p_align = 0x1000,             /* Segment alignment */
+  };
+}
+
+BF_DEF Elf64_Phdr gen_elf_tape_program_header(void) {
+  return (Elf64_Phdr) {
+    .p_type = PT_LOAD,      /* Segment type */
+    .p_offset = 0,          /* Segment file offset */
+    .p_vaddr = 0x401000,    /* Segment virtual address */
+    .p_paddr = 0x401000,    /* Segment physical address */
+    .p_filesz = 0x7530,     /* Segment size in file */
+    .p_memsz = 0x7530,      /* Segment size in memory */
+    .p_flags = PF_W | PF_R, /* Segment flags */
+    .p_align = 0x1000,      /* Segment alignment */
+  };
 }
 
 BF_DEF bool patch_tokenizer_jmp(Tokenizer *t) {
