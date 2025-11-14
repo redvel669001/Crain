@@ -39,15 +39,16 @@ size_t len = 0;
 void compile_test(const char *test);
 void run_test(const char *test);
 
-bool opt = false;
-bool compile = true;
+bool opt = false; // Optimize before compiling/interpreting.
+bool compile = true; // Compile to binary.
 bool noisy = false; // Comments in assembly.
 bool verbose = false; // Extra comments in assembly.
 bool extra_verbose = false; // Extra comments in assembly.
 bool readable = false; // Tabs for readability.
 bool run = true; // flag for running the file after compiling.
 bool dump_asm = false; // flag for dumping the assembly without compiling.
-bool simulate = false;
+bool simulate = false; // flag to use crain as an interpreter, rather than a compiler.
+bool direct_to_binary = false; // flag for compiling directly to binary, rather than generating assembly and using fasm to compile the generated assembly to binary.
 
 int main(int argc, char **argv) {
   /* argc--; argv++; */
@@ -76,6 +77,11 @@ int main(int argc, char **argv) {
                strcmp(*argv, "--simulate") == 0) {
       simulate = true;
       compile = false;
+    } else if (strcmp(*argv, "-b") == 0 ||
+               strcmp(*argv, "--binary") == 0) {
+      direct_to_binary = true;
+      simulate = false;
+      compile = true;
     }
   }
   
@@ -100,12 +106,13 @@ void compile_test(const char *test) {
   len = c_len + src_len + test_len + build_len + test_len + 120;
   cmd = malloc(len);
   /* snprintf(cmd, len, "%s %s%s.bf -n -c -o %s%s", compiler, src, test, build, test); */
-  snprintf(cmd, len, "%s %s%s.bf %s%s%s%s%s%s%s%s-o %s%s",
+  snprintf(cmd, len, "%s %s%s.bf %s%s%s%s%s%s%s%s%s-o %s%s",
            compiler, src, test,
            opt ? "--opt " : "", noisy ? "-n " : "",
-           compile ? "-c " : "", verbose ? "-v " : "",
-           extra_verbose ? "-e " : "", readable ? "-re " : "",
-           dump_asm ? "-da " : "", run ? "-r " : "", build, test);
+           compile ? "-c " : "", direct_to_binary  ? "-b " : "",
+           verbose ? "-v " : "", extra_verbose ? "-e " : "",
+           readable ? "-re " : "", dump_asm ? "-da " : "",
+           run ? "-r " : "", build, test);
   printf("[INFO] %s\n", cmd);
 }
 

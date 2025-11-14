@@ -1,7 +1,9 @@
-#include <stdio.h>
-#include <stdbool.h>
-#include <stdlib.h>
+#include <assert.h>
+#include <elf.h>
 #include <stdarg.h>
+#include <stdbool.h>
+#include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
 
@@ -30,7 +32,6 @@ const char *name = "crain";
 // Report diagnostics - note: report diagnostics for notes, using the tokenizer.
 #define diag_note(to, fmt, ...)                                         \
   report(NOTE, (to)->path, (to)->t->row, (to)->t->col, (fmt), __VA_ARGS__)
-
 
 #define PROGRAM_SIZE 30000
 
@@ -123,11 +124,15 @@ typedef struct {
   Op *op;
 } Program;
 
+DA_MAKE(char, Bytes);
+
 typedef enum {
   NOTE,
   WARNING,
   ERROR,
 } ReportLevel;
+
+BF_DEF void append_bytes(Bytes *s, const char *bytes, size_t len);
 
 BF_DEF int print_usage(void);
 BF_DEF bool tokenize_file(Tokenizer *t);
@@ -144,6 +149,8 @@ BF_DEF void print_token(Tokenizer *t);
 
 BF_DEF bool simulate_program(Tokenizer *t);
 BF_DEF bool compile_program_fasm(Tokenizer *t);
+BF_DEF bool compile_program_elf(Tokenizer *t);
+
 BF_DEF bool gen_move_pointer_fasm(Tokenizer *t, FILE *f);
 BF_DEF void gen_arithmetic_fasm(Tokenizer *t, FILE *f);
 BF_DEF void gen_write_fasm(Tokenizer *t, FILE *f);
@@ -152,9 +159,12 @@ BF_DEF void gen_lp_bgn_fasm(Tokenizer *t, FILE *f, size_t jmp, size_t index);
 BF_DEF void gen_lp_end_fasm(Tokenizer *t, FILE *f, size_t jmp, size_t index);
 
 BF_DEF bool patch_tokenizer_jmp(Tokenizer *t);
+BF_DEF void patch_tokenizer_jmp_for_binary(Tokenizer *t);
 BF_DEF bool patch_token_jmp(Tokenizer *t);
+BF_DEF void patch_token_jmp_for_binary(Tokenizer *t);
 
 BF_DEF const char *token_type_to_cstr(TokenType type);
+BF_DEF size_t bin_len_by_token_type(TokenType type);
 
 BF_DEF void report(ReportLevel r, const char *path, const size_t row, const size_t col, const char *fmt, ...);
 
@@ -181,6 +191,7 @@ BF_DEF bool program_jump(Program *prog, const Op *jmp);
 char program[PROGRAM_SIZE];
 bool opt = false;
 bool compile = false;
+bool direct_to_binary = false;
 const char *output = "";
 char *out_s = NULL;
 size_t out_len = 0;
@@ -197,6 +208,8 @@ size_t count = 0;
 size_t pointer = 0;
 const char *tab = "   ";
 const char *spc = " ";
+
+size_t bin_lens[TOKEN_TYPES/2] = {3, 2, 16, 11};
 
 void remove_ext(void) {
   out_len = strlen(output);
@@ -244,17 +257,28 @@ int main(int argc, char **argv) {
              strcmp(*argv, "--run") == 0) run = true;
     else if (strcmp(*argv, "-da") == 0 ||
              strcmp(*argv, "--dump-asm") == 0) dump_asm = true;
+    else if (strcmp(*argv, "-b") == 0 ||
+             strcmp(*argv, "--binary") == 0) {
+      compile = true;
+      direct_to_binary = true;
+    }
   }
 
   if (def_out) remove_ext();
   
   if (!tokenize_file(&t)) return 1;
   if (compile) {
-    if (opt) {
-      Program prog = {0};
-      if (!optimize_program(&t, &prog)) return 1;
-      if (!compile_optimized_program_fasm(&prog, &t)) return 1;
-    } else if (!compile_program_fasm(&t)) return 1;
+    if (direct_to_binary) {
+      if (!compile_program_elf(&t)) return 1;
+    }
+    else {
+      if (opt) {
+        Program prog = {0};
+        if (!optimize_program(&t, &prog)) return 1;
+        if (!compile_optimized_program_fasm(&prog, &t)) return 1;
+      } else if (!compile_program_fasm(&t)) return 1;
+      /* if (!compile_program_fasm_(&t)) return 1; */
+    }
     return 0;
   }
   if (opt) {
@@ -265,6 +289,10 @@ int main(int argc, char **argv) {
   }
   if (!simulate_program(&t)) return 1;
   return 0;
+}
+
+BF_DEF void append_bytes(Bytes *s, const char *bytes, size_t len) {
+  for (size_t i = 0; i < len; i++) da_append(s, *(bytes + i));
 }
 
 BF_DEF int print_usage(void) {
@@ -432,8 +460,8 @@ BF_DEF bool compile_program_fasm(Tokenizer *t) {
   }
   
   size_t pointer = 0;
-  const char *tab = readable ? "   " : "";
-  const char *spc = readable ? " " : "";
+  tab = readable ? "   " : "";
+  spc = readable ? " " : "";
 
   fprintf(f, "format ELF64 executable 3\nentry start\nstart:\n");
 
@@ -499,6 +527,310 @@ BF_DEF bool compile_program_fasm(Tokenizer *t) {
   if (run) {
     if (noisy) printf("[INFO] %s\n", final_out);
     system(final_out);
+  }
+  
+  return true;
+}
+
+BF_DEF bool compile_program_elf(Tokenizer *t) {
+  bool testing = false;
+  if (testing) {
+    const char *old = "./build/quine_old";
+    FILE *f = fopen(old, "rb");
+
+    if (f == NULL) {
+      fprintf(stderr, "Could not open file `%s`.\n", old);
+      if (f) fclose(f);
+      return false;
+    }
+
+    if (fseek(f, 0, SEEK_END) != 0) {
+      fprintf(stderr, "Could not seek to the end of file `%s`.\n", old);
+      fclose(f);
+      return false;
+    }
+  
+    long ffs = ftell(f);
+    if (ffs == -1) {
+      fprintf(stderr, "Could not measure size of file `%s`.\n", old);
+      fclose(f);
+      return false;
+    }
+
+    char *ft = malloc(ffs);
+    fseek(f, 0, SEEK_SET);
+    if (fread(ft, ffs, 1, f) == 0) {
+      fprintf(stderr, "Could not read file `%s`. It there was an error, or the file was empty.\n", old);
+    }
+
+    const char *new = "./build/quine";
+    FILE *g = fopen(new, "rb");
+    if (g == NULL) {
+      fprintf(stderr, "Could not open file `%s`.\n", new);
+      if (g) fclose(g);
+      return false;
+    }
+
+    if (fseek(g, 0, SEEK_END) != 0) {
+      fprintf(stderr, "Could not seek to the end of file `%s`.\n", new);
+      fclose(g);
+      return false;
+    }
+  
+    long gfs = ftell(g);
+    if (gfs == -1) {
+      fprintf(stderr, "Could not measure size of file `%s`.\n", new);
+      fclose(f);
+      return false;
+    }
+
+    char *gt = malloc(gfs);
+    fseek(g, 0, SEEK_SET);
+    if (fread(gt, gfs, 1, g) == 0) {
+      fprintf(stderr, "Could not read file `%s`. It there was an error, or the file was empty.\n", new);
+    }
+
+    if (ffs != gfs) {
+      printf("file sizes are not the same!\n");
+    }
+    /* for (long i = 0; i <  */
+
+    fclose(f);
+    fclose(g);
+    return true;
+  }
+  FILE *f = fopen(output, "wb");
+  if (f == NULL) {
+    // Maybe do a better error reporting here?
+    fprintf(stderr, "Could not open file `%s`.\n", output);
+    if (f) fclose(f);
+    return false;
+  }
+
+  // Generate header and stuff.
+  Elf64_Ehdr elfh = {
+    .e_ident = {
+      ELFMAG0,
+      ELFMAG1,
+      ELFMAG2,
+      ELFMAG3,
+      ELFCLASS64,
+      ELFDATA2LSB,
+      EV_CURRENT,
+      ELFOSABI_LINUX,
+      0, 0, 0, 0, 0, 0, 0, 0//, EI_NIDENT
+    },                       /* Magic number and other info */
+    .e_type = ET_EXEC,       /* Object file type */
+    .e_machine = EM_X86_64,  /* Architecture */
+    .e_version = EV_CURRENT, /* Object file version */
+    .e_entry = 0x4000b0,     /* Entry point virtual address */
+    .e_phoff = 64,           /* Program header table file offset */
+    .e_shoff = 0,            /* Section header table file offset */
+    .e_flags = 0,            /* Processor-specific flags */
+    .e_ehsize = 64,          /* ELF header size in bytes */
+    .e_phentsize = 56,       /* Program header table entry size */
+    .e_phnum = 2,            /* Program header table entry count */
+    .e_shentsize = 64,        /* Section header table entry size */
+    .e_shnum = 0,            /* Section header table entry count */
+    .e_shstrndx = SHN_UNDEF, /* Section header string table index */
+  };
+
+  Elf64_Phdr entry = {
+    .p_type = PT_LOAD,             /* Segment type */
+    .p_offset = 0,                 /* Segment file offset */
+    .p_vaddr = 0x400000,           /* Segment virtual address */
+    .p_paddr = 0x400000,           /* Segment physical address */
+    .p_filesz = 0x1bea,            /* Segment size in file */
+    .p_memsz = 0x1bea,             /* Segment size in memory */
+    .p_flags = PF_X | PF_W | PF_R, /* Segment flags */
+    .p_align = 0x1000,             /* Segment alignment */
+  };
+
+  Elf64_Phdr tape = {
+    .p_type = PT_LOAD,      /* Segment type */
+    .p_offset = 0,          /* Segment file offset */
+    .p_vaddr = 0x401000,    /* Segment virtual address */
+    .p_paddr = 0x401000,    /* Segment physical address */
+    .p_filesz = 0x7530,     /* Segment size in file */
+    .p_memsz = 0x7530,      /* Segment size in memory */
+    .p_flags = PF_W | PF_R, /* Segment flags */
+    .p_align = 0x1000,      /* Segment alignment */
+  };
+
+  size_t s = fwrite(&elfh, 1, sizeof(elfh), f);
+  if (s != sizeof(elfh)) {
+    printf("hello?\n");
+    perror("fwrite");
+    return false;
+  }
+
+  // Point rsi at the tape.
+  Bytes start = {0};
+  append_bytes(&start, "\x48\xc7", 2); // MOV
+  append_bytes(&start, "\xc6", 1); // rsi
+  append_bytes(&start, "\0\0\0\0", 4); // tape address, needs to be patched
+  append_bytes(&start, "\x48\xc7", 2); // MOV
+  append_bytes(&start, "\xc2", 1); // rdx
+  append_bytes(&start, "\1\0\0\0", 4); // 1
+  
+  size_t pointer = 0;
+  first_token(t);
+  t->p = program;
+  patch_tokenizer_jmp(t);
+  patch_tokenizer_jmp_for_binary(t);
+
+  Bytes insts = {0};
+  size_t bin_jmp = 0;
+  
+  while (true) {
+    bin_jmp = t->t->jmp;
+    switch (t->t->type) {
+    case RIGHT:
+      // 48ff for INC
+      // c6 for rsi
+      append_bytes(&insts, "\x48\xff\xc6", 3); 
+      break;
+    case LEFT:
+      // 48ff for DEC
+      // ce for rsi
+      append_bytes(&insts, "\x48\xff\xce", 3); 
+      break;
+    case INC:
+      // inc byte[rsi]
+      append_bytes(&insts, "\xfe\x06", 2);
+      break;
+    case DEC:
+      // dec byte[rsi]
+      append_bytes(&insts, "\xfe\x0e", 2);
+      break;
+    case OUT:
+      // mov rax, 1
+      append_bytes(&insts, "\x48\xc7\xc0\1\0\0\0", 7);
+      // mov rdi, 1
+      append_bytes(&insts, "\x48\xc7\xc7\1\0\0\0", 7);
+      // syscall
+      append_bytes(&insts, "\x0f\x05", 2);
+      break;
+    case IN:
+      // mov rax, 0
+      append_bytes(&insts, "\x48\xc7\xc0\0\0\0\0", 7);
+      // mov rdi, 0
+      append_bytes(&insts, "\x48\xc7\xc7\0\0\0\0", 7);
+      // syscall
+      append_bytes(&insts, "\x0f\x05", 2);
+      break;
+    case LOOP_BGN:
+      // mov rax, QWORD [rsi]
+      append_bytes(&insts, "\x48\x8b\x06", 3);
+      // test al, al
+      append_bytes(&insts, "\x84\xc0", 2);
+      // jz
+      append_bytes(&insts, "\x0f\x84", 2);
+
+      for (size_t i = 0; i < 4; i++) {
+        char c = (bin_jmp >> (i * 8)) & 0xFF;
+        da_append(&insts, c);
+      }
+      break;
+    case LOOP_END:
+      // mov rax, QWORD [rsi]
+      append_bytes(&insts, "\x48\x8b\x06", 3);
+      // test al, al
+      append_bytes(&insts, "\x84\xc0", 2);
+      // jnz
+      append_bytes(&insts, "\x0f\x85", 2);
+
+      for (size_t i = 0; i < 4; i++) {
+        char c = (bin_jmp >> (i * 8)) & 0xFF;
+        da_append(&insts, c);
+      }
+      break;
+    case TOKEN_TYPES: default: assert (0 && "unreachable"); break;
+    }
+
+    if (!next_token(t)) break;
+  }
+
+  // exit with exit code 0
+  append_bytes(&insts, "\x48\xc7\xc0", 3); // mov rax
+  append_bytes(&insts, "\x3c\0\0\0", 4); // 60
+  append_bytes(&insts, "\x48\xc7\xc7", 3); // mov rdi
+  append_bytes(&insts, "\0\0\0\0", 4); // 0
+  append_bytes(&insts, "\x0f\5", 2); // syscall
+
+  // patch entry.p_filesz
+  entry.p_filesz = 176 + start.count + insts.count;
+  entry.p_memsz = entry.p_filesz;
+
+  // patch tape.vaddr
+  tape.p_vaddr += entry.p_filesz;
+  tape.p_paddr = tape.p_vaddr;
+  tape.p_offset = entry.p_filesz;
+
+  // patch the pointer to the tape.
+  size_t tape_pointer = tape.p_vaddr;
+  for (size_t i = 0; i < 4; i++) {
+    start.items[3 + i] = (tape_pointer >> (i * 8)) & 0xFF;
+  }
+  
+  s = fwrite(&entry, 1, sizeof(entry), f);
+  if (s != sizeof(entry)) {
+    printf("again?\n");
+    perror("fwrite");
+    return false;
+  }
+  
+  s = fwrite(&tape, 1, sizeof(tape), f);
+  if (s != sizeof(tape)) {
+    printf("tape?\n");
+    perror("fwrite");
+    return false;
+  }
+
+  s = fwrite(start.items, 1, start.count, f);
+  if (s != start.count) {
+    printf("insts?\n");
+    perror("fwrite");
+    return false;
+  }
+  
+  s = fwrite(insts.items, 1, insts.count, f);
+  if (s != insts.count) {
+    printf("insts?\n");
+    perror("fwrite");
+    return false;
+  }
+
+  s = fwrite(program, 1, PROGRAM_SIZE, f);
+  if (s != PROGRAM_SIZE) {
+    printf("tape?\n");
+    perror("fwrite");
+    return false;
+  }
+
+  if (noisy) printf("[INFO] Successfully generated binary %s\n", output);
+
+  bool print_insts = false;
+  if (print_insts) {
+    printf("\n\n--------------------------------------------------\n\n");
+    printf("insts:\n");
+    for (size_t i = 0; i < insts.count; i++) putchar(*(insts.items + i));
+    printf("\n\n--------------------------------------------------\n\n");
+  }
+
+  const char *cmd = "chmod +x";
+  size_t cmd_len = strlen(cmd);
+  size_t command_len = out_len + cmd_len + 1;
+  char *command = malloc(command_len);
+  snprintf(command, command_len, "%s %s", cmd, output);
+  if (noisy) printf("[INFO] %s\n", command);
+  system(command);
+  
+  fclose(f);
+
+  if (run) {
+    if (noisy) printf("[INFO] %s\n", output);
+    system(output);
   }
   
   return true;
@@ -588,6 +920,17 @@ BF_DEF bool patch_tokenizer_jmp(Tokenizer *t) {
   return to_token(t, point);
 }
 
+BF_DEF void patch_tokenizer_jmp_for_binary(Tokenizer *t) {
+  size_t point = t->index;
+
+  while (true) {
+    if (t->t->type == LOOP_BGN) patch_token_jmp_for_binary(t);
+    if (!next_token(t)) break;
+  }
+  
+  to_token(t, point);
+}
+
 BF_DEF bool patch_token_jmp(Tokenizer *t) {
   size_t lpb = 0;
   size_t lpe = 0;
@@ -609,6 +952,31 @@ BF_DEF bool patch_token_jmp(Tokenizer *t) {
   if (!to_token(t, point)) return false;
   t->t->jmp = jmp;
   return true;
+}
+
+BF_DEF void patch_token_jmp_for_binary(Tokenizer *t) {
+  size_t point = t->index;
+  size_t jmp = t->t->jmp;
+  size_t bin_jmp = 0;
+  for (size_t i = point; i < jmp; i++) {
+    Token *tok = t->ts.items + i;
+    size_t bin_len = bin_len_by_token_type(tok->type);
+    bin_jmp += bin_len;
+  }
+
+  t->t->jmp = bin_jmp;
+
+  bin_jmp = 0;
+  
+  for (size_t i = jmp; i > point; i--) {
+    Token *tok = t->ts.items + i;
+    size_t bin_len = bin_len_by_token_type(tok->type);
+    bin_jmp -= bin_len;
+  }
+
+  to_token(t, jmp);
+  t->t->jmp = bin_jmp;
+  to_token(t, point);
 }
 
 /*
@@ -641,6 +1009,10 @@ BF_DEF const char *token_type_to_cstr(TokenType type) {
   default: return "UNREACHABLE";
   }
   return "UNREACHABLE";
+}
+
+BF_DEF size_t bin_len_by_token_type(TokenType type) {
+  return bin_lens[type/2];
 }
 
 BF_DEF void report(ReportLevel r, const char *path, const size_t row, const size_t col, const char *fmt, ...) {
@@ -1038,4 +1410,8 @@ BF_DEF bool to_op(Program *prog, size_t index) {
 BF_DEF bool program_jump(Program *prog, const Op *jmp) {
   size_t index = jmp - prog->items;
   return to_op(prog, index);
+}
+
+BF_DEF bool check_bounds_(size_t index, size_t count) {
+  return (index >= 0) && (index < count);
 }
