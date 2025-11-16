@@ -138,7 +138,7 @@ BF_DEF int print_usage(void);
 BF_DEF bool tokenize_file(Tokenizer *t);
 BF_DEF TokenType type_index(char c);
 
-BF_DEF bool check_bounds(Tokenizer *t);
+BF_DEF bool check_bounds(const Tokenizer *t);
 BF_DEF bool first_token(Tokenizer *t);
 BF_DEF bool next_token(Tokenizer *t);
 BF_DEF bool prev_token(Tokenizer *t);
@@ -190,7 +190,7 @@ BF_DEF void patch_op_jmp_for_binary(Program *prog);
 BF_DEF bool gen_optimized_move_pointer_fasm(Program *prog, Tokenizer *t, FILE *f);
 BF_DEF void gen_optimized_arithmetic_fasm(Program *prog, Tokenizer *t, FILE *f);
 
-BF_DEF bool check_optimized_program_bounds(Program *prog);
+BF_DEF bool check_optimized_program_bounds(const Program *prog);
 BF_DEF bool first_op(Program *prog);
 BF_DEF bool next_op(Program *prog);
 BF_DEF bool prev_op(Program *prog);
@@ -377,7 +377,7 @@ BF_DEF TokenType type_index(char c) {
   return TOKEN_TYPES;
 }
 
-BF_DEF bool check_bounds(Tokenizer *t) {
+BF_DEF bool check_bounds(const Tokenizer *t) {
   return (t->index >= 0) && (t->index < t->ts.count);
 }
 
@@ -1562,7 +1562,7 @@ BF_DEF void gen_optimized_arithmetic_fasm(Program *prog, Tokenizer *t, FILE *f) 
   if (add) (*prog->p) += count; else (*prog->p) -= count;
 }
 
-BF_DEF bool check_optimized_program_bounds(Program *prog) {
+BF_DEF bool check_optimized_program_bounds(const Program *prog) {
   return (prog->index >= 0) && (prog->index < prog->count);
 }
 
