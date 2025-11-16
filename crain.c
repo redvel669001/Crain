@@ -563,7 +563,6 @@ BF_DEF bool compile_program_elf(Tokenizer *t) {
 
   size_t s = fwrite(&elfh, 1, sizeof(elfh), f);
   if (s != sizeof(elfh)) {
-    printf("hello?\n");
     perror("fwrite");
     return false;
   }
@@ -679,48 +678,35 @@ BF_DEF bool compile_program_elf(Tokenizer *t) {
   
   s = fwrite(&entry, 1, sizeof(entry), f);
   if (s != sizeof(entry)) {
-    printf("again?\n");
     perror("fwrite");
     return false;
   }
   
   s = fwrite(&thdr, 1, sizeof(thdr), f);
   if (s != sizeof(thdr)) {
-    printf("tape?\n");
     perror("fwrite");
     return false;
   }
 
   s = fwrite(start.items, 1, start.count, f);
   if (s != start.count) {
-    printf("insts?\n");
     perror("fwrite");
     return false;
   }
   
   s = fwrite(insts.items, 1, insts.count, f);
   if (s != insts.count) {
-    printf("insts?\n");
     perror("fwrite");
     return false;
   }
 
   s = fwrite(tape, 1, thdr.p_filesz, f);
   if (s != thdr.p_filesz) {
-    printf("tape?\n");
     perror("fwrite");
     return false;
   }
 
   if (noisy) printf("[INFO] Successfully generated binary %s\n", output);
-
-  bool print_insts = false;
-  if (print_insts) {
-    printf("\n\n--------------------------------------------------\n\n");
-    printf("insts:\n");
-    for (size_t i = 0; i < insts.count; i++) putchar(*(insts.items + i));
-    printf("\n\n--------------------------------------------------\n\n");
-  }
 
   const char *cmd = "chmod +x";
   size_t cmd_len = strlen(cmd);
@@ -1296,7 +1282,6 @@ BF_DEF bool compile_optimized_program_elf(Program *prog) {
 
   size_t s = fwrite(&elfh, 1, sizeof(elfh), f);
   if (s != sizeof(elfh)) {
-    printf("hello?\n");
     perror("fwrite");
     return false;
   }
@@ -1438,48 +1423,35 @@ BF_DEF bool compile_optimized_program_elf(Program *prog) {
 
   s = fwrite(&entry, 1, sizeof(entry), f);
   if (s != sizeof(entry)) {
-    printf("again?\n");
     perror("fwrite");
     return false;
   }
   
   s = fwrite(&thdr, 1, sizeof(thdr), f);
   if (s != sizeof(thdr)) {
-    printf("tape?\n");
     perror("fwrite");
     return false;
   }
 
   s = fwrite(start.items, 1, start.count, f);
   if (s != start.count) {
-    printf("insts?\n");
     perror("fwrite");
     return false;
   }
   
   s = fwrite(insts.items, 1, insts.count, f);
   if (s != insts.count) {
-    printf("insts?\n");
     perror("fwrite");
     return false;
   }
 
   s = fwrite(tape, 1, thdr.p_filesz, f);
   if (s != thdr.p_filesz) {
-    printf("tape?\n");
     perror("fwrite");
     return false;
   }
 
   if (noisy) printf("[INFO] Successfully generated binary %s\n", output);
-
-  bool print_insts = false;
-  if (print_insts) {
-    printf("\n\n--------------------------------------------------\n\n");
-    printf("insts:\n");
-    for (size_t i = 0; i < insts.count; i++) putchar(*(insts.items + i));
-    printf("\n\n--------------------------------------------------\n\n");
-  }
 
   const char *cmd = "chmod +x";
   size_t cmd_len = strlen(cmd);
