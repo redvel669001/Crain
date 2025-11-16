@@ -111,7 +111,7 @@ typedef enum {
 struct Op {
   OpType type;
   size_t count;
-  const Token *t;
+  size_t t;
   size_t jmp;
 };
 
@@ -143,7 +143,6 @@ BF_DEF bool first_token(Tokenizer *t);
 BF_DEF bool next_token(Tokenizer *t);
 BF_DEF bool prev_token(Tokenizer *t);
 BF_DEF bool to_token(Tokenizer *t, size_t index);
-BF_DEF bool tokenizer_jump(Tokenizer *t, const Token *jmp);
 
 BF_DEF void print_token(Tokenizer *t);
 
@@ -196,7 +195,6 @@ BF_DEF bool first_op(Program *prog);
 BF_DEF bool next_op(Program *prog);
 BF_DEF bool prev_op(Program *prog);
 BF_DEF bool to_op(Program *prog, size_t index);
-BF_DEF bool program_jump(Program *prog, const Op *jmp);
 
 char tape[TAPE_SIZE];
 bool opt = false;
@@ -405,11 +403,6 @@ BF_DEF bool to_token(Tokenizer *t, size_t index) {
   t->index = index;
   t->t = t->ts.items + t->index;
   return check_bounds(t);
-}
-
-BF_DEF bool tokenizer_jump(Tokenizer *t, const Token *jmp) {
-  size_t index = jmp - t->ts.items;
-  return to_token(t, index);
 }
 
 BF_DEF void print_token(Tokenizer *t) {
@@ -997,7 +990,7 @@ BF_DEF bool optimize_program(Tokenizer *t, Program *prog) {
   if (!patch_tokenizer_jmp(t)) return false;
   Op op = {0};
   while (true) {
-    op.t = t->t;
+    op.t = t->index;
     op.count = 0;
     op.type = t->t->type;
     switch (t->t->type) {
@@ -1127,7 +1120,7 @@ BF_DEF bool simulate_optimized_program(Program *prog, Tokenizer *t) {
   prog->p = tape;
   patch_program_jmp(prog);
   while (true) {
-    tokenizer_jump(t, prog->op->t);
+    to_token(t, prog->op->t);
     switch (prog->op->type) {
     case RIGHT:
       prog->p += prog->op->count;
@@ -1196,7 +1189,7 @@ BF_DEF bool compile_optimized_program_fasm(Program *prog, Tokenizer *t) {
   if (verbose) fprintf(f, ";; Reads and writes operate on only one character, so just move 1 to rdx once and for all.\n");
   fprintf(f, "%smov rdx,%s1\n", tab, spc);
   while (true) {
-    tokenizer_jump(t, prog->op->t);
+    to_token(t, prog->op->t);
     count = prog->op->count;
     prog->p = tape + pointer;
     if (pointer > max) max = pointer;
@@ -1595,9 +1588,4 @@ BF_DEF bool to_op(Program *prog, size_t index) {
   prog->index = index;
   prog->op = prog->items + prog->index;
   return check_optimized_program_bounds(prog);
-}
-
-BF_DEF bool program_jump(Program *prog, const Op *jmp) {
-  size_t index = jmp - prog->items;
-  return to_op(prog, index);
 }
