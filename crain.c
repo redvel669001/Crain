@@ -169,6 +169,7 @@ BF_DEF void patch_token_jmp_for_binary(Tokenizer *t);
 
 BF_DEF const char *token_type_to_cstr(TokenType type);
 BF_DEF size_t bin_len_by_token_type(TokenType type);
+BF_DEF size_t bin_len_by_op_type(OpType type);
 
 BF_DEF void report(ReportLevel r, const char *path, const size_t row, const size_t col, const char *fmt, ...);
 
@@ -179,11 +180,16 @@ BF_DEF void accumulate_arithmetic(Tokenizer *t, Op *op);
 BF_DEF void optimize_loop(Tokenizer *t, Op *op);
 
 BF_DEF bool simulate_optimized_program(Program *prog, Tokenizer *t);
+BF_DEF bool compile_optimized_program_fasm(Program *prog, Tokenizer *t);
+BF_DEF bool compile_optimized_program_elf(Program *prog);
+
+BF_DEF bool patch_program_jmp(Program *prog);
+BF_DEF void patch_program_jmp_for_binary(Program *prog);
+BF_DEF bool patch_op_jmp(Program *prog);
+BF_DEF void patch_op_jmp_for_binary(Program *prog);
+
 BF_DEF bool gen_optimized_move_pointer_fasm(Program *prog, Tokenizer *t, FILE *f);
 BF_DEF void gen_optimized_arithmetic_fasm(Program *prog, Tokenizer *t, FILE *f);
-BF_DEF bool compile_optimized_program_fasm(Program *prog, Tokenizer *t);
-BF_DEF bool patch_program_jmp(Program *prog);
-BF_DEF bool patch_op_jmp(Program *prog);
 
 BF_DEF bool check_optimized_program_bounds(Program *prog);
 BF_DEF bool first_op(Program *prog);
@@ -214,6 +220,7 @@ const char *tab = "   ";
 const char *spc = " ";
 
 size_t bin_lens[TOKEN_TYPES/2] = {3, 2, 16, 11};
+size_t bin_lens_opt[OP_TYPES/2] = {7, 3, 16, 11};
 
 void remove_ext(void) {
   out_len = strlen(output);
@@ -276,7 +283,10 @@ int main(int argc, char **argv) {
   
   if (compile) {
     if (direct_to_binary) {
-      if (!compile_program_elf(&t)) return 1;
+      if (opt) {
+        if (!compile_optimized_program_elf(&prog)) return 1;
+      }
+      else if (!compile_program_elf(&t)) return 1;
     }
     else {
       if (opt) {
@@ -695,8 +705,8 @@ BF_DEF bool compile_program_elf(Tokenizer *t) {
     return false;
   }
 
-  s = fwrite(tape, 1, TAPE_SIZE, f);
-  if (s != TAPE_SIZE) {
+  s = fwrite(tape, 1, thdr.p_filesz, f);
+  if (s != thdr.p_filesz) {
     printf("tape?\n");
     perror("fwrite");
     return false;
@@ -960,6 +970,12 @@ BF_DEF size_t bin_len_by_token_type(TokenType type) {
   return bin_lens[type/2];
 }
 
+BF_DEF size_t bin_len_by_op_type(OpType type) {
+  if (type < ZERO) return bin_lens_opt[type/2];
+  else if (type == ZERO) return 3;
+  return -1;
+}
+
 BF_DEF void report(ReportLevel r, const char *path, const size_t row, const size_t col, const char *fmt, ...) {
   FILE *stream;
   const char *diag = "";
@@ -1168,31 +1184,6 @@ BF_DEF bool simulate_optimized_program(Program *prog, Tokenizer *t) {
   return true;
 }
 
-BF_DEF bool gen_optimized_move_pointer_fasm(Program *prog, Tokenizer *t, FILE *f) {
-  bool right = prog->op->type == R;
-  
-  if (verbose) fprintf(f, "%s;; %s rsi, which points to the tape, by %zu.\n", tab, right ? "increment" : "decrement", count);
-  fprintf(f, "%s%s rsi,%s%zu\n", tab, right ? "add" : "sub", spc, count);
-  if (right) pointer += count; else pointer -= count;
-  
-  if (pointer >= TAPE_SIZE) {
-    diag_err(t, "Stack overflow! The allocated array has only %d elements, no more!\n", TAPE_SIZE);
-    return false;
-  } else if (pointer < 0) {
-    diag_err(t, "%s", "Stack underflow! Cannot move pointer to before its starting point!\n");
-    return false;
-  }
-  
-  return true;
-}
-
-BF_DEF void gen_optimized_arithmetic_fasm(Program *prog, Tokenizer *t, FILE *f) {
-  bool add = prog->op->type == I;
-  if (verbose) fprintf(f, "%s;; %s the current character by %zu.\n", tab, add ? "increment" : "decrement", count);
-  fprintf(f, "%s%s byte%s[rsi],%s%zu\n", tab, add ? "add" : "sub", spc, spc, count);
-  if (add) (*prog->p) += count; else (*prog->p) -= count;
-}
-
 BF_DEF bool compile_optimized_program_fasm(Program *prog, Tokenizer *t) {
   size_t out_s_len = out_len + 2;
   out_s = malloc(out_s_len);
@@ -1289,6 +1280,225 @@ BF_DEF bool compile_optimized_program_fasm(Program *prog, Tokenizer *t) {
   return true;
 }
 
+BF_DEF bool compile_optimized_program_elf(Program *prog) {
+  FILE *f = fopen(output, "wb");
+  if (f == NULL) {
+    // Maybe do a better error reporting here?
+    fprintf(stderr, "Could not open file `%s`.\n", output);
+    if (f) fclose(f);
+    return false;
+  }
+
+  // Mandatory headers.
+  Elf64_Ehdr elfh = gen_elf_header();
+  Elf64_Phdr entry = gen_elf_entry_program_header();
+  Elf64_Phdr thdr = gen_elf_tape_program_header();
+
+  size_t s = fwrite(&elfh, 1, sizeof(elfh), f);
+  if (s != sizeof(elfh)) {
+    printf("hello?\n");
+    perror("fwrite");
+    return false;
+  }
+
+  // Point rsi at the tape.
+  Bytes start = {0};
+  append_bytes(&start, "\x48\xc7", 2); // MOV
+  append_bytes(&start, "\xc6", 1); // rsi
+  append_bytes(&start, "\0\0\0\0", 4); // tape address, needs to be patched
+  append_bytes(&start, "\x48\xc7", 2); // MOV
+  append_bytes(&start, "\xc2", 1); // rdx
+  append_bytes(&start, "\1\0\0\0", 4); // 1
+  
+  size_t pointer = 0;
+  /* first_token(t); */
+  first_op(prog);
+  patch_program_jmp(prog);
+  patch_program_jmp_for_binary(prog);
+
+  Bytes insts = {0};
+  size_t bin_jmp = 0;
+  size_t count = 0;
+  size_t max = 0;
+  
+  while (true) {
+    bin_jmp = prog->op->jmp;
+    count = prog->op->count;
+    if (pointer > max) max = pointer;
+    switch (prog->op->type) {
+    case R:
+      // 4881 for ADD
+      // c6 for rsi
+      append_bytes(&insts, "\x48\x81\xc6", 3);
+      
+      for (size_t i = 0; i < 4; i++) {
+        char c = (count >> (i * 8)) & 0xFF;
+        da_append(&insts, c);
+      }
+
+      pointer += count;
+      break;
+    case L:
+      // 4881 for SUB
+      // ee for rsi
+      append_bytes(&insts, "\x48\x81\xee", 3);
+      
+      for (size_t i = 0; i < 4; i++) {
+        char c = (count >> (i * 8)) & 0xFF;
+        da_append(&insts, c);
+      }
+
+      pointer -= count;
+      break;
+    case I:
+      append_bytes(&insts, "\x80\x06", 2); // add [byte] rsi
+      da_append(&insts, (char) (count % 256)); // how much to add
+      break;
+    case D:
+      append_bytes(&insts, "\x80\x2e", 2); // sub [byte] rsi
+      da_append(&insts, (char) (count % 256)); // how much to sub
+      break;
+    case OP_OUT:
+      // mov rax, 1
+      append_bytes(&insts, "\x48\xc7\xc0\1\0\0\0", 7);
+      // mov rdi, 1
+      append_bytes(&insts, "\x48\xc7\xc7\1\0\0\0", 7);
+      // syscall
+      append_bytes(&insts, "\x0f\x05", 2);
+      break;
+    case OP_IN:
+      // mov rax, 0
+      append_bytes(&insts, "\x48\xc7\xc0\0\0\0\0", 7);
+      // mov rdi, 0
+      append_bytes(&insts, "\x48\xc7\xc7\0\0\0\0", 7);
+      // syscall
+      append_bytes(&insts, "\x0f\x05", 2);
+      break;
+    case LP_BGN:
+      // mov rax, QWORD [rsi]
+      append_bytes(&insts, "\x48\x8b\x06", 3);
+      // test al, al
+      append_bytes(&insts, "\x84\xc0", 2);
+      // jz
+      append_bytes(&insts, "\x0f\x84", 2);
+
+      for (size_t i = 0; i < 4; i++) {
+        char c = (bin_jmp >> (i * 8)) & 0xFF;
+        da_append(&insts, c);
+      }
+      break;
+    case LP_END:
+      // mov rax, QWORD [rsi]
+      append_bytes(&insts, "\x48\x8b\x06", 3);
+      // test al, al
+      append_bytes(&insts, "\x84\xc0", 2);
+      // jnz
+      append_bytes(&insts, "\x0f\x85", 2);
+
+      for (size_t i = 0; i < 4; i++) {
+        char c = (bin_jmp >> (i * 8)) & 0xFF;
+        da_append(&insts, c);
+      }
+      break;
+    case ZERO:
+      append_bytes(&insts, "\xc6\x06\x00", 3); // mov byte [rsi], 0
+      break;
+    case R_ZERO: case L_ZERO: break; // these don't make sense when compiling
+    case OP_TYPES: default: assert (0 && "unreachable"); break;
+   }
+
+    if (!next_op(prog)) break;
+  }
+
+  // exit with exit code 0
+  append_bytes(&insts, "\x48\xc7\xc0", 3); // mov rax
+  append_bytes(&insts, "\x3c\0\0\0", 4); // 60
+  append_bytes(&insts, "\x48\xc7\xc7", 3); // mov rdi
+  append_bytes(&insts, "\0\0\0\0", 4); // 0
+  append_bytes(&insts, "\x0f\5", 2); // syscall
+
+  // patch entry.p_filesz
+  entry.p_filesz = 176 + start.count + insts.count;
+  entry.p_memsz = entry.p_filesz;
+
+  // patch tape.vaddr
+  thdr.p_vaddr += entry.p_filesz;
+  thdr.p_paddr = thdr.p_vaddr;
+  thdr.p_offset = entry.p_filesz;
+
+  // patch tape size
+  thdr.p_filesz = max;
+  thdr.p_memsz = max;
+
+  // patch the pointer to the tape.
+  size_t tape_pointer = thdr.p_vaddr;
+  for (size_t i = 0; i < 4; i++) {
+    start.items[3 + i] = (tape_pointer >> (i * 8)) & 0xFF;
+  }
+
+  s = fwrite(&entry, 1, sizeof(entry), f);
+  if (s != sizeof(entry)) {
+    printf("again?\n");
+    perror("fwrite");
+    return false;
+  }
+  
+  s = fwrite(&thdr, 1, sizeof(thdr), f);
+  if (s != sizeof(thdr)) {
+    printf("tape?\n");
+    perror("fwrite");
+    return false;
+  }
+
+  s = fwrite(start.items, 1, start.count, f);
+  if (s != start.count) {
+    printf("insts?\n");
+    perror("fwrite");
+    return false;
+  }
+  
+  s = fwrite(insts.items, 1, insts.count, f);
+  if (s != insts.count) {
+    printf("insts?\n");
+    perror("fwrite");
+    return false;
+  }
+
+  s = fwrite(tape, 1, thdr.p_filesz, f);
+  if (s != thdr.p_filesz) {
+    printf("tape?\n");
+    perror("fwrite");
+    return false;
+  }
+
+  if (noisy) printf("[INFO] Successfully generated binary %s\n", output);
+
+  bool print_insts = false;
+  if (print_insts) {
+    printf("\n\n--------------------------------------------------\n\n");
+    printf("insts:\n");
+    for (size_t i = 0; i < insts.count; i++) putchar(*(insts.items + i));
+    printf("\n\n--------------------------------------------------\n\n");
+  }
+
+  const char *cmd = "chmod +x";
+  size_t cmd_len = strlen(cmd);
+  size_t command_len = out_len + cmd_len + 1;
+  char *command = malloc(command_len);
+  snprintf(command, command_len, "%s %s", cmd, output);
+  if (noisy) printf("[INFO] %s\n", command);
+  system(command);
+  
+  fclose(f);
+
+  if (run) {
+    if (noisy) printf("[INFO] %s\n", output);
+    system(output);
+  }
+  
+  return true;
+}
+
 BF_DEF bool patch_program_jmp(Program *prog) {
   size_t point = prog->index;
 
@@ -1301,6 +1511,17 @@ BF_DEF bool patch_program_jmp(Program *prog) {
   prog->op = prog->items + prog->index;
   return to_op(prog, point);
   return true;
+}
+
+BF_DEF void patch_program_jmp_for_binary(Program *prog) {
+  size_t point = prog->index;
+
+  while (true) {
+    if (prog->op->type == LP_BGN) patch_op_jmp_for_binary(prog);
+    if (!next_op(prog)) break;
+  }
+  
+  to_op(prog, point);
 }
 
 BF_DEF bool patch_op_jmp(Program *prog) {
@@ -1324,6 +1545,56 @@ BF_DEF bool patch_op_jmp(Program *prog) {
   if (!to_op(prog, point)) return false;
   prog->op->jmp = jmp;
   return true;
+}
+
+BF_DEF void patch_op_jmp_for_binary(Program *prog) {
+  size_t point = prog->index;
+  size_t jmp = prog->op->jmp;
+  size_t bin_jmp = 0;
+  for (size_t i = point; i < jmp; i++) {
+    Op *op = prog->items + i;
+    size_t bin_len = bin_len_by_op_type(op->type);
+    bin_jmp += bin_len;
+  }
+
+  prog->op->jmp = bin_jmp;
+
+  bin_jmp = 0;
+  
+  for (size_t i = jmp; i > point; i--) {
+    Op *op = prog->items + i;
+    size_t bin_len = bin_len_by_op_type(op->type);
+    bin_jmp -= bin_len;
+  }
+
+  to_op(prog, jmp);
+  prog->op->jmp = bin_jmp;
+  to_op(prog, point);
+}
+
+BF_DEF bool gen_optimized_move_pointer_fasm(Program *prog, Tokenizer *t, FILE *f) {
+  bool right = prog->op->type == R;
+  
+  if (verbose) fprintf(f, "%s;; %s rsi, which points to the tape, by %zu.\n", tab, right ? "increment" : "decrement", count);
+  fprintf(f, "%s%s rsi,%s%zu\n", tab, right ? "add" : "sub", spc, count);
+  if (right) pointer += count; else pointer -= count;
+  
+  if (pointer >= TAPE_SIZE) {
+    diag_err(t, "Stack overflow! The allocated array has only %d elements, no more!\n", TAPE_SIZE);
+    return false;
+  } else if (pointer < 0) {
+    diag_err(t, "%s", "Stack underflow! Cannot move pointer to before its starting point!\n");
+    return false;
+  }
+  
+  return true;
+}
+
+BF_DEF void gen_optimized_arithmetic_fasm(Program *prog, Tokenizer *t, FILE *f) {
+  bool add = prog->op->type == I;
+  if (verbose) fprintf(f, "%s;; %s the current character by %zu.\n", tab, add ? "increment" : "decrement", count);
+  fprintf(f, "%s%s byte%s[rsi],%s%zu\n", tab, add ? "add" : "sub", spc, spc, count);
+  if (add) (*prog->p) += count; else (*prog->p) -= count;
 }
 
 BF_DEF bool check_optimized_program_bounds(Program *prog) {
