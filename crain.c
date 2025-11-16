@@ -1601,7 +1601,3 @@ BF_DEF bool program_jump(Program *prog, const Op *jmp) {
   size_t index = jmp - prog->items;
   return to_op(prog, index);
 }
-
-BF_DEF bool check_bounds_(size_t index, size_t count) {
-  return (index >= 0) && (index < count);
-}
