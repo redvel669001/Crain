@@ -77,6 +77,7 @@ int main(int argc, char **argv) {
                strcmp(*argv, "--simulate") == 0) {
       simulate = true;
       compile = false;
+      run = false;
     } else if (strcmp(*argv, "-b") == 0 ||
                strcmp(*argv, "--binary") == 0) {
       direct_to_binary = true;
@@ -88,14 +89,12 @@ int main(int argc, char **argv) {
   build_len = strlen(build) + 1;
   src_len = strlen(src) + 1;
   c_len = strlen(compiler) + 1;
+  int ret = 0;
   for (size_t i = 0; i < TEST_NAMES; i++) {
     compile_test(tests[i]);
-    system(cmd);
-    /* if (run) { */
-    /*   run_test(tests[i]); */
-    /*   system(cmd); */
-    /* } */
+    ret = system(cmd);
     printf("\n\n");
+    if (ret == -1) return 1;
   }
   
   return 0;
@@ -106,10 +105,11 @@ void compile_test(const char *test) {
   len = c_len + src_len + test_len + build_len + test_len + 120;
   cmd = malloc(len);
   /* snprintf(cmd, len, "%s %s%s.bf -n -c -o %s%s", compiler, src, test, build, test); */
-  snprintf(cmd, len, "%s %s%s.bf %s%s%s%s%s%s%s%s%s-o %s%s",
+  snprintf(cmd, len, "%s %s%s.bf %s%s%s%s%s%s%s%s%s%s-o %s%s",
            compiler, src, test,
            opt ? "--opt " : "", noisy ? "-n " : "",
-           compile ? "-c " : "", direct_to_binary  ? "-b " : "",
+           simulate ? "-s " : "", compile ? "-c " : "",
+           direct_to_binary  ? "-b " : "",
            verbose ? "-v " : "", extra_verbose ? "-e " : "",
            readable ? "-re " : "", dump_asm ? "-da " : "",
            run ? "-r " : "", build, test);

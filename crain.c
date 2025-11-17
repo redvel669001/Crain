@@ -517,7 +517,8 @@ BF_DEF bool compile_program_fasm(Tokenizer *t) {
   char *command = malloc(command_len);
   snprintf(command, command_len, "%s %s", comp, out_s);
   if (noisy) printf("[INFO] %s\n", command);
-  system(command);
+  int ret = system(command);
+  if (ret == -1) return false;
 
   // Find the name of the generated executable.
   char *final_out = malloc(out_len);
@@ -530,11 +531,13 @@ BF_DEF bool compile_program_fasm(Tokenizer *t) {
   char *cmd = malloc(cmd_len);
   snprintf(cmd, cmd_len, "%s %s", chmod_cmd, final_out);
   if (noisy) printf("[INFO] %s\n", cmd);
-  system(cmd);
+  ret = system(cmd);
+  if (ret == -1) return false;
   
   if (run) {
     if (noisy) printf("[INFO] %s\n", final_out);
-    system(final_out);
+    ret = system(final_out);
+    if (ret == -1) return false;
   }
   
   return true;
@@ -699,6 +702,7 @@ BF_DEF bool compile_program_elf(Tokenizer *t) {
     return false;
   }
 
+  fclose(f);
   if (noisy) printf("[INFO] Successfully generated binary %s\n", output);
 
   const char *cmd = "chmod +x";
@@ -707,13 +711,13 @@ BF_DEF bool compile_program_elf(Tokenizer *t) {
   char *command = malloc(command_len);
   snprintf(command, command_len, "%s %s", cmd, output);
   if (noisy) printf("[INFO] %s\n", command);
-  system(command);
-  
-  fclose(f);
+  int ret = system(command);
+  if (ret == -1) return false;
 
   if (run) {
     if (noisy) printf("[INFO] %s\n", output);
-    system(output);
+    ret = system(output);
+    if (ret == -1) return false;
   }
   
   return true;
@@ -1006,6 +1010,7 @@ BF_DEF bool optimize_program(Tokenizer *t, Program *prog) {
     da_append(prog, op);
     if (!next_token(t)) break;
   }
+  return true;
 }
 
 BF_DEF void accumulate_shifts(Tokenizer *t, Op *op) {
@@ -1183,7 +1188,7 @@ BF_DEF bool compile_optimized_program_fasm(Program *prog, Tokenizer *t) {
   first_op(prog);
   prog->p = tape;
   patch_program_jmp(prog);
-  size_t max = 0;
+  size_t max = 1;
   if (verbose) fprintf(f, ";; Make rsi point at the tape.\n");
   fprintf(f, "%smov rsi,%stape\n", tab, spc);
   if (verbose) fprintf(f, ";; Reads and writes operate on only one character, so just move 1 to rdx once and for all.\n");
@@ -1236,7 +1241,8 @@ BF_DEF bool compile_optimized_program_fasm(Program *prog, Tokenizer *t) {
   char *command = malloc(command_len);
   snprintf(command, command_len, "%s %s", comp, out_s);
   if (noisy) printf("[INFO] %s\n", command);
-  system(command);
+  int ret = system(command);
+  if (ret == -1) return false;
 
   // Find the name of the generated executable.
   char *final_out = malloc(out_len);
@@ -1249,11 +1255,13 @@ BF_DEF bool compile_optimized_program_fasm(Program *prog, Tokenizer *t) {
   char *cmd = malloc(cmd_len);
   snprintf(cmd, cmd_len, "%s %s", chmod_cmd, final_out);
   if (noisy) printf("[INFO] %s\n", cmd);
-  system(cmd);
+  ret = system(cmd);
+  if (ret == -1) return false;
   
   if (run) {
     if (noisy) printf("[INFO] %s\n", final_out);
-    system(final_out);
+    ret = system(final_out);
+    if (ret == -1) return false;
   }
   
   return true;
@@ -1297,7 +1305,7 @@ BF_DEF bool compile_optimized_program_elf(Program *prog) {
   Bytes insts = {0};
   size_t bin_jmp = 0;
   size_t count = 0;
-  size_t max = 0;
+  size_t max = 1;
   
   while (true) {
     bin_jmp = prog->op->jmp;
@@ -1444,6 +1452,7 @@ BF_DEF bool compile_optimized_program_elf(Program *prog) {
     return false;
   }
 
+  fclose(f);
   if (noisy) printf("[INFO] Successfully generated binary %s\n", output);
 
   const char *cmd = "chmod +x";
@@ -1452,13 +1461,13 @@ BF_DEF bool compile_optimized_program_elf(Program *prog) {
   char *command = malloc(command_len);
   snprintf(command, command_len, "%s %s", cmd, output);
   if (noisy) printf("[INFO] %s\n", command);
-  system(command);
-  
-  fclose(f);
+  int ret = system(command);
+  if (ret == -1) return false;
 
   if (run) {
     if (noisy) printf("[INFO] %s\n", output);
-    system(output);
+    ret = system(output);
+    if (ret == -1) return false;
   }
   
   return true;
