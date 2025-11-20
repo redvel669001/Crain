@@ -40,6 +40,7 @@ void compile_test(const char *test);
 void run_test(const char *test);
 
 bool opt = false; // Optimize before compiling/interpreting.
+bool size_opt = false; // Optimize the binary size when compiling directly to binary.
 bool compile = true; // Compile to binary.
 bool noisy = false; // Comments in assembly.
 bool verbose = false; // Extra comments in assembly.
@@ -83,6 +84,10 @@ int main(int argc, char **argv) {
       direct_to_binary = true;
       simulate = false;
       compile = true;
+    } else if (strcmp(*argv, "-so") == 0 ||
+               strcmp(*argv, "--size-opt") == 0) {
+      opt = true;
+      size_opt = true;
     }
   }
   
@@ -105,11 +110,11 @@ void compile_test(const char *test) {
   len = c_len + src_len + test_len + build_len + test_len + 120;
   cmd = malloc(len);
   /* snprintf(cmd, len, "%s %s%s.bf -n -c -o %s%s", compiler, src, test, build, test); */
-  snprintf(cmd, len, "%s %s%s.bf %s%s%s%s%s%s%s%s%s%s-o %s%s",
+  snprintf(cmd, len, "%s %s%s.bf %s%s%s%s%s%s%s%s%s%s%s-o %s%s",
            compiler, src, test,
-           opt ? "--opt " : "", noisy ? "-n " : "",
-           simulate ? "-s " : "", compile ? "-c " : "",
-           direct_to_binary  ? "-b " : "",
+           opt ? "--opt " : "", size_opt ? "-so " : "",
+           noisy ? "-n " : "", simulate ? "-s " : "",
+           compile ? "-c " : "", direct_to_binary  ? "-b " : "",
            verbose ? "-v " : "", extra_verbose ? "-e " : "",
            readable ? "-re " : "", dump_asm ? "-da " : "",
            run ? "-r " : "", build, test);
