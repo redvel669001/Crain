@@ -196,6 +196,7 @@ BF_DEF bool to_op(Program *prog, size_t index);
 
 char tape[TAPE_SIZE];
 bool opt = false;
+bool size_opt = false;
 bool compile = false;
 bool direct_to_binary = false;
 const char *output = "";
@@ -268,6 +269,10 @@ int main(int argc, char **argv) {
              strcmp(*argv, "--binary") == 0) {
       compile = true;
       direct_to_binary = true;
+    } else if (strcmp(*argv, "-so") == 0 ||
+               strcmp(*argv, "--size-opt") == 0) {
+      opt = true;
+      size_opt = true;
     }
   }
 
