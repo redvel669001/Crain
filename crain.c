@@ -37,7 +37,6 @@ const char *name = "crain";
 
 #define DA_INIT_CAPACITY 1024
 
-#ifndef da_append
 #define da_append(da, item)                                             \
   do {                                                                  \
     if ((da)->capacity < (da)->count + 1) {                             \
@@ -51,7 +50,6 @@ const char *name = "crain";
     }                                                                   \
     (da)->items[(da)->count++] = (item);                                \
   } while (0)
-#endif // da_append
 
 #define DA_MAKE(type, name)                     \
   typedef struct {                              \
@@ -303,7 +301,17 @@ int main(int argc, char **argv) {
 }
 
 BF_DEF void append_bytes(Bytes *s, const char *bytes, size_t len) {
-  for (size_t i = 0; i < len; i++) da_append(s, *(bytes + i));
+  if (s->count + len > s->capacity) {
+    if (s->capacity == 0) {
+      s->capacity = DA_INIT_CAPACITY;
+    }
+    while (s->count + len > s->capacity) {
+      s->capacity *= 2;
+    }
+    s->items = realloc(s->items, s->capacity);
+  }
+  memcpy(s->items + s->count, bytes, len);
+  s->count += len;
 }
 
 BF_DEF int print_usage(void) {
