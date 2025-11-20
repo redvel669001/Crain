@@ -674,7 +674,7 @@ BF_DEF bool compile_program_elf(Tokenizer *t) {
   entry.p_filesz = 176 + start.count + insts.count;
   entry.p_memsz = entry.p_filesz;
 
-  // patch tape.vaddr
+  // patch thdr.vaddr
   thdr.p_vaddr += entry.p_filesz;
   thdr.p_paddr = thdr.p_vaddr;
   thdr.p_offset = entry.p_filesz;
@@ -1420,7 +1420,7 @@ BF_DEF bool compile_optimized_program_elf(Program *prog) {
   entry.p_filesz = 176 + start.count + insts.count;
   entry.p_memsz = entry.p_filesz;
 
-  // patch tape.vaddr
+  // patch thdr.vaddr
   thdr.p_vaddr += entry.p_filesz;
   thdr.p_paddr = thdr.p_vaddr;
   thdr.p_offset = entry.p_filesz;
