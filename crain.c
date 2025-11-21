@@ -135,6 +135,15 @@ typedef enum {
   ERROR,
 } ReportLevel;
 
+typedef enum {
+  RAX,
+  RBX,
+  RSI,
+  RDX,
+  RDI,
+  REGISTERS,
+} Register;
+
 BF_DEF void append_bytes(Bytes *s, const char *bytes, size_t len);
 
 BF_DEF int print_usage(void);
@@ -164,6 +173,27 @@ BF_DEF Elf64_Ehdr gen_elf_header(void);
 BF_DEF Elf64_Phdr gen_elf_entry_program_header(void);
 BF_DEF Elf64_Phdr gen_elf_tape_program_header(void);
 
+BF_DEF void gen_start_elf(Bytes *s, bool write, bool read);
+BF_DEF void gen_mov_elf(Bytes *s, Register r, size_t count);
+BF_DEF void gen_inc_or_dec_elf(Bytes *s, Register r, bool inc);
+BF_DEF void gen_add_or_sub_elf(Bytes *s, Register r, bool add, bool lf, size_t a);
+
+BF_DEF void gen_little_endian(Bytes *s, size_t big_endian, size_t len);
+
+BF_DEF void gen_move_pointer_elf(Bytes *s, int type);
+BF_DEF void gen_arithmetic_elf(Bytes *s, int type);
+BF_DEF void gen_read_write_syscall_elf(Bytes *s, int type);
+BF_DEF void gen_lp_elf(Bytes *s, int type, size_t jmp);
+BF_DEF void gen_exit_ok_elf(Bytes *s, bool write, bool read);
+
+BF_DEF void gen_syscall_elf(Bytes *s);
+
+BF_DEF void patch_tape_elf(Elf64_Phdr *e, Elf64_Phdr *t, Bytes *s, size_t insts);
+BF_DEF bool write_headers_to_elf(FILE *f, Elf64_Phdr entry, Elf64_Phdr thdr);
+BF_DEF bool write_bytes_to_elf(FILE *f, Bytes *start, Bytes *insts, size_t tlen);
+
+BF_DEF bool make_executable_and_optionally_run(void);
+
 BF_DEF bool patch_tokenizer_jmp(Tokenizer *t);
 BF_DEF void patch_tokenizer_jmp_for_binary(Tokenizer *t);
 BF_DEF bool patch_token_jmp(Tokenizer *t);
@@ -181,6 +211,8 @@ BF_DEF void accumulate_shifts(Tokenizer *t, Op *op);
 BF_DEF void accumulate_arithmetic(Tokenizer *t, Op *op);
 BF_DEF void optimize_loop(Tokenizer *t, Op *op);
 
+BF_DEF bool extra_optimize_loop(Program *prog, Op *op);
+
 BF_DEF bool simulate_optimized_program(Program *prog, Tokenizer *t);
 BF_DEF bool compile_optimized_program_fasm(Program *prog, Tokenizer *t);
 BF_DEF bool compile_optimized_program_elf(Program *prog);
@@ -194,7 +226,15 @@ BF_DEF void patch_op_jmp_for_binary(Program *prog);
 BF_DEF void patch_op_jmp_for_size_opt_bin(Program *prog);
 
 BF_DEF bool gen_optimized_move_pointer_fasm(Program *prog, Tokenizer *t, FILE *f);
-BF_DEF void gen_optimized_arithmetic_fasm(Program *prog, Tokenizer *t, FILE *f);
+BF_DEF void gen_optimized_arithmetic_fasm(Program *prog, FILE *f);
+
+BF_DEF void gen_optimized_move_pointer_elf(Op *op, Bytes *s);
+BF_DEF void gen_size_optimized_move_pointer_elf(Op *op, Bytes *s);
+BF_DEF void gen_optimized_arithmetic_elf(Op *op, Bytes *s);
+BF_DEF void gen_size_optimized_arithmetic_elf(Op *op, Bytes *s);
+BF_DEF void gen_zero_elf(Bytes *s);
+BF_DEF void gen_size_optimized_read_write_syscall_elf(Op *op, Bytes *s, bool *w, bool *r);
+BF_DEF void gen_size_optimized_lp_elf(Op *op, Bytes *s);
 
 BF_DEF bool check_optimized_program_bounds(const Program *prog);
 BF_DEF bool first_op(Program *prog);
@@ -219,7 +259,7 @@ bool readable = false; // Tabs for readability.
 bool run = false; // flag for running the file after compiling.
 bool dump_asm = false; // flag for dumping the assembly without compiling.
 
-size_t count = 0;
+/* size_t count = 0; */
 size_t pointer = 0;
 const char *tab = "   ";
 const char *spc = " ";
@@ -589,161 +629,33 @@ BF_DEF bool compile_program_elf(Tokenizer *t) {
 
   // Point rsi at the tape.
   Bytes start = {0};
-  append_bytes(&start, "\x48\xc7", 2); // MOV
-  append_bytes(&start, "\xc6", 1); // rsi
-  append_bytes(&start, "\0\0\0\0", 4); // tape address, needs to be patched
-  append_bytes(&start, "\x48\xc7", 2); // MOV
-  append_bytes(&start, "\xc2", 1); // rdx
-  append_bytes(&start, "\1\0\0\0", 4); // 1
+  gen_start_elf(&start, true, true);
   
   size_t pointer = 0;
   first_token(t);
-  t->p = tape;
   patch_tokenizer_jmp(t);
   patch_tokenizer_jmp_for_binary(t);
 
   Bytes insts = {0};
-  size_t bin_jmp = 0;
-  
-  while (true) {
-    bin_jmp = t->t->jmp;
-    switch (t->t->type) {
-    case RIGHT:
-      // 48ff for INC
-      // c6 for rsi
-      append_bytes(&insts, "\x48\xff\xc6", 3); 
-      break;
-    case LEFT:
-      // 48ff for DEC
-      // ce for rsi
-      append_bytes(&insts, "\x48\xff\xce", 3); 
-      break;
-    case INC:
-      // inc byte[rsi]
-      append_bytes(&insts, "\xfe\x06", 2);
-      break;
-    case DEC:
-      // dec byte[rsi]
-      append_bytes(&insts, "\xfe\x0e", 2);
-      break;
-    case OUT:
-      // mov rax, 1
-      append_bytes(&insts, "\x48\xc7\xc0\1\0\0\0", 7);
-      // mov rdi, 1
-      append_bytes(&insts, "\x48\xc7\xc7\1\0\0\0", 7);
-      // syscall
-      append_bytes(&insts, "\x0f\x05", 2);
-      break;
-    case IN:
-      // mov rax, 0
-      append_bytes(&insts, "\x48\xc7\xc0\0\0\0\0", 7);
-      // mov rdi, 0
-      append_bytes(&insts, "\x48\xc7\xc7\0\0\0\0", 7);
-      // syscall
-      append_bytes(&insts, "\x0f\x05", 2);
-      break;
-    case LOOP_BGN:
-      // mov rax, QWORD [rsi]
-      append_bytes(&insts, "\x48\x8b\x06", 3);
-      // test al, al
-      append_bytes(&insts, "\x84\xc0", 2);
-      // jz
-      append_bytes(&insts, "\x0f\x84", 2);
-
-      for (size_t i = 0; i < 4; i++) {
-        char c = (bin_jmp >> (i * 8)) & 0xFF;
-        da_append(&insts, c);
-      }
-      break;
-    case LOOP_END:
-      // mov rax, QWORD [rsi]
-      append_bytes(&insts, "\x48\x8b\x06", 3);
-      // test al, al
-      append_bytes(&insts, "\x84\xc0", 2);
-      // jnz
-      append_bytes(&insts, "\x0f\x85", 2);
-
-      for (size_t i = 0; i < 4; i++) {
-        char c = (bin_jmp >> (i * 8)) & 0xFF;
-        da_append(&insts, c);
-      }
-      break;
+  for (size_t i = 0; i < t->ts.count; i++) {
+    Token *tok = t->ts.items + i;
+    switch (tok->type) {
+    case RIGHT: case LEFT: gen_move_pointer_elf(&insts, tok->type); break;
+    case INC: case DEC: gen_arithmetic_elf(&insts, tok->type); break;
+    case OUT: case IN: gen_read_write_syscall_elf(&insts, tok->type); break;
+    case LOOP_BGN: case LOOP_END: gen_lp_elf(&insts, tok->type, tok->jmp); break;
     case TOKEN_TYPES: default: assert (0 && "unreachable"); break;
     }
-
-    if (!next_token(t)) break;
   }
 
-  // exit with exit code 0
-  append_bytes(&insts, "\x48\xc7\xc0", 3); // mov rax
-  append_bytes(&insts, "\x3c\0\0\0", 4); // 60
-  append_bytes(&insts, "\x48\xc7\xc7", 3); // mov rdi
-  append_bytes(&insts, "\0\0\0\0", 4); // 0
-  append_bytes(&insts, "\x0f\5", 2); // syscall
+  gen_exit_ok_elf(&insts, false, false);
+  patch_tape_elf(&entry, &thdr, &start, insts.count);
 
-  // patch entry.p_filesz
-  entry.p_filesz = 176 + start.count + insts.count;
-  entry.p_memsz = entry.p_filesz;
-
-  // patch thdr.vaddr
-  thdr.p_vaddr += entry.p_filesz;
-  thdr.p_paddr = thdr.p_vaddr;
-  thdr.p_offset = entry.p_filesz;
-
-  // patch the pointer to the tape.
-  size_t tape_pointer = thdr.p_vaddr;
-  for (size_t i = 0; i < 4; i++) {
-    start.items[3 + i] = (tape_pointer >> (i * 8)) & 0xFF;
-  }
-  
-  s = fwrite(&entry, 1, sizeof(entry), f);
-  if (s != sizeof(entry)) {
-    perror("fwrite");
-    return false;
-  }
-  
-  s = fwrite(&thdr, 1, sizeof(thdr), f);
-  if (s != sizeof(thdr)) {
-    perror("fwrite");
-    return false;
-  }
-
-  s = fwrite(start.items, 1, start.count, f);
-  if (s != start.count) {
-    perror("fwrite");
-    return false;
-  }
-  
-  s = fwrite(insts.items, 1, insts.count, f);
-  if (s != insts.count) {
-    perror("fwrite");
-    return false;
-  }
-
-  s = fwrite(tape, 1, thdr.p_filesz, f);
-  if (s != thdr.p_filesz) {
-    perror("fwrite");
-    return false;
-  }
-
+  if (!write_headers_to_elf(f, entry, thdr)) return false;
+  if (!write_bytes_to_elf(f, &start, &insts, thdr.p_filesz)) return false;
   fclose(f);
   if (noisy) printf("[INFO] Successfully generated binary %s\n", output);
-
-  const char *cmd = "chmod +x";
-  size_t cmd_len = strlen(cmd);
-  size_t command_len = out_len + cmd_len + 1;
-  char *command = malloc(command_len);
-  snprintf(command, command_len, "%s %s", cmd, output);
-  if (noisy) printf("[INFO] %s\n", command);
-  int ret = system(command);
-  if (ret == -1) return false;
-
-  if (run) {
-    if (noisy) printf("[INFO] %s\n", output);
-    ret = system(output);
-    if (ret == -1) return false;
-  }
-  
+  if (!make_executable_and_optionally_run()) return false;
   return true;
 }
 
@@ -870,6 +782,198 @@ BF_DEF Elf64_Phdr gen_elf_tape_program_header(void) {
     .p_align = 0x1000,      /* Segment alignment */
   };
 }
+
+BF_DEF void gen_start_elf(Bytes *s, bool write, bool read) {
+  // Point rsi at the tape < needs to be patched later
+  gen_mov_elf(s, RSI, 0); // mov rsi, 0
+  if (write || read) gen_mov_elf(s, RDX, 1);
+  if (size_opt && write) {
+    gen_mov_elf(s, RAX, 1);
+    gen_mov_elf(s, RDI, 1);
+  } else if (size_opt && read) {
+    gen_mov_elf(s, RAX, 0);
+    gen_mov_elf(s, RDI, 0);
+  }
+}
+
+BF_DEF void gen_mov_elf(Bytes *s, Register r, size_t count) {
+  append_bytes(s, "\x48\xC7", 2); // mov
+  switch (r) {
+  case RAX: da_append(s, 0xC0); break;
+  case RSI: da_append(s, 0xC6); break;
+  case RDX: da_append(s, 0xC2); break;
+  case RDI: da_append(s, 0xC7); break;
+  case RBX:
+  case REGISTERS: default: assert(0 && "UNREACHABLE");
+  }
+  gen_little_endian(s, count, 4);
+}
+
+BF_DEF void gen_inc_or_dec_elf(Bytes *s, Register r, bool inc) {
+  append_bytes(s, "\x48\xFF", 2);
+  switch (r) {
+  case RAX: da_append(s, inc ? 0xC0 : 0xC8); break;
+  case RSI: da_append(s, inc ? 0xC6 : 0xCE); break;
+  case RDI: da_append(s, inc ? 0xC7 : 0xCF); break;
+  case RDX:
+  case RBX:
+  case REGISTERS: default: assert(0 && "UNREACHABLE");
+  }
+}
+
+BF_DEF void gen_add_or_sub_elf(Bytes *s, Register r, bool add, bool lf, size_t a) {
+  da_append(s, 0x48);
+  if (lf) da_append(s, 0x81);
+  else {
+    if (r != RAX) da_append(s, 0x83);
+    else {
+      if (add) da_append(s, 0x05);
+      else da_append(s, 0x2D);
+      return;
+    }
+  }
+  switch (r) {
+  case RAX: da_append(s, add ? 0xC0 : 0xE8); break;
+  case RBX: da_append(s, add ? 0xC3 : 0xEB); break;
+  case RSI: da_append(s, add ? 0xC6 : 0xEE); break;
+  case RDX: da_append(s, add ? 0xC7 : 0xEF); break;
+  case RDI: da_append(s, add ? 0xC2 : 0xEA); break;
+  case REGISTERS: default: assert(0 && "UNREACHABLE");
+  }
+
+  if (!lf) da_append(s, (char) (a & 0xFF));
+  else gen_little_endian(s, a, 4);
+}
+
+BF_DEF void gen_little_endian(Bytes *s, size_t big_endian, size_t len) {
+  for (size_t i = 0; i < len; i++) {
+    char c = (big_endian >> (i * 8)) & 0xFF;
+    da_append(s, c);
+  }
+}
+
+BF_DEF void gen_move_pointer_elf(Bytes *s, int type) {
+  append_bytes(s, "\x48\xFF", 2); // inc or dec, seemingly inferred by the next byte.
+  if (type == RIGHT) da_append(s, 0xC6); 
+  else da_append(s, 0xCE); 
+}
+
+BF_DEF void gen_arithmetic_elf(Bytes *s, int type) {
+  da_append(s, 0xFE); // inc or dec [byte], seemingly inferred by the next byte.
+  if (type == INC) da_append(s, 0x06); // implies inc and byte [rsi].
+  else da_append(s, 0x0E); // implies dec and byte [rsi].
+}
+
+
+BF_DEF void gen_read_write_syscall_elf(Bytes *s, int type) {
+  size_t call = type == OUT ? 1 : 0;
+  gen_mov_elf(s, RAX, call);
+  gen_mov_elf(s, RDI, call);
+  gen_syscall_elf(s);
+}
+
+BF_DEF void gen_lp_elf(Bytes *s, int type, size_t jmp) {
+  append_bytes(s, "\x48\x8b\x06", 3); // mov rax, QWORD [rsi]
+  append_bytes(s, "\x84\xc0", 2); // test al, al
+  if (type == LOOP_BGN) append_bytes(s, "\x0f\x84", 2); // jz
+  else append_bytes(s, "\x0f\x85", 2); // jnz
+  gen_little_endian(s, jmp, 4);
+}
+
+BF_DEF void gen_exit_ok_elf(Bytes *s, bool write, bool read) {
+  /* gen_mov_elf(s, RAX, 60); */
+  /* gen_mov_elf(s, RDI, 0); */
+  /* gen_syscall_elf(s); */
+
+  if (write) {
+    gen_add_or_sub_elf(s, RAX, true, true, 59);
+    gen_inc_or_dec_elf(s, RDI, false);
+  } else if (read) {
+    gen_add_or_sub_elf(s, RAX, true, true, 60);
+  } else {
+    gen_mov_elf(s, RAX, 60);
+    gen_mov_elf(s, RDI, 0);
+  }
+  gen_syscall_elf(s);
+}
+
+BF_DEF void gen_syscall_elf(Bytes *s) {
+  append_bytes(s, "\x0f\x05", 2);
+}
+
+BF_DEF void patch_tape_elf(Elf64_Phdr *e, Elf64_Phdr *t, Bytes *s, size_t insts) {
+  // patch entry's p_filesz
+  e->p_filesz = 176 + s->count + insts;
+  e->p_memsz = e->p_filesz;
+
+  // patch thdr's vaddr
+  t->p_vaddr += e->p_filesz;
+  t->p_paddr = t->p_vaddr;
+  t->p_offset = e->p_filesz;
+
+  // patch the pointer to the tape.
+  size_t tape_pointer = t->p_vaddr;
+  for (size_t i = 0; i < 4; i++) {
+    s->items[3 + i] = (tape_pointer >> (i * 8)) & 0xFF;
+  }
+}
+
+BF_DEF bool write_headers_to_elf(FILE *f, Elf64_Phdr entry, Elf64_Phdr thdr) {
+  size_t s = fwrite(&entry, 1, sizeof(entry), f);
+  if (s != sizeof(entry)) {
+    perror("fwrite");
+    return false;
+  }
+  
+  s = fwrite(&thdr, 1, sizeof(thdr), f);
+  if (s != sizeof(thdr)) {
+    perror("fwrite");
+    return false;
+  }
+
+  return true;
+}
+
+BF_DEF bool write_bytes_to_elf(FILE *f, Bytes *start, Bytes *insts, size_t tlen) {
+  size_t s = fwrite(start->items, 1, start->count, f);
+  if (s != start->count) {
+    perror("fwrite");
+    return false;
+  }
+  
+  s = fwrite(insts->items, 1, insts->count, f);
+  if (s != insts->count) {
+    perror("fwrite");
+    return false;
+  }
+
+  s = fwrite(tape, 1, tlen, f);
+  if (s != tlen) {
+    perror("fwrite");
+    return false;
+  }
+
+  return true;
+}
+
+BF_DEF bool make_executable_and_optionally_run(void) {
+  const char *cmd = "chmod +x";
+  size_t cmd_len = strlen(cmd);
+  size_t command_len = out_len + cmd_len + 1;
+  char *command = malloc(command_len);
+  snprintf(command, command_len, "%s %s", cmd, output);
+  if (noisy) printf("[INFO] %s\n", command);
+  int ret = system(command);
+  if (ret == -1) return false;
+
+  if (run) {
+    if (noisy) printf("[INFO] %s\n", output);
+    ret = system(output);
+    if (ret == -1) return false;
+  }
+  return true;
+}
+
 
 BF_DEF bool patch_tokenizer_jmp(Tokenizer *t) {
   size_t point = t->index;
@@ -1144,48 +1248,48 @@ BF_DEF void optimize_loop(Tokenizer *t, Op *op) {
   } else to_token(t, point);
 }
 
+
 BF_DEF bool simulate_optimized_program(Program *prog, Tokenizer *t) {
-  first_op(prog);
+  if (!first_op(prog)) return false;
   prog->p = tape;
+  putchar(10);
   patch_program_jmp(prog);
   while (true) {
     to_token(t, prog->op->t);
     switch (prog->op->type) {
-    case RIGHT:
+    case R:
       prog->p += prog->op->count;
       if (prog->p - tape >= TAPE_SIZE) {
         diag_err(t, "Stack overflow! The allocated array has only %d elements, no more!\n", TAPE_SIZE);
         return false;
       }
       break;
-    case LEFT:
+    case L:
       prog->p -= prog->op->count;
       if (prog->p - tape < 0) {
         diag_err(t, "%s", "Stack underflow! Cannot move pointer to before its starting point!\n");
         return false;
       }
       break;
-    case INC: (*prog->p) += prog->op->count; break;
-    case DEC: (*prog->p) -= prog->op->count; break;
-    case OUT: putc((*prog->p), stdout); break;
-    case IN: (*prog->p) = getchar(); break;
-    case LOOP_BGN:
+    case I: (*prog->p) += prog->op->count; break;
+    case D: (*prog->p) -= prog->op->count; break;
+    case OP_OUT: putc((*prog->p), stdout); break;
+    case OP_IN: (*prog->p) = getchar(); break;
+    case LP_BGN:
       if (*prog->p == 0) {
-        if (!to_op(prog, prog->op->jmp)) return false;
-        prev_op(prog);
+        if (!to_op(prog, prog->op->jmp - 1)) return false;
       }
       break;
-    case LOOP_END:
+    case LP_END:
       if (*prog->p != 0) {
-        if (!to_op(prog, prog->op->jmp)) return false;
-        prev_op(prog);
+        if (!to_op(prog, prog->op->jmp - 1)) return false;
       }
       break;
     case ZERO: (*prog->p) = 0; break;
     case R_ZERO: while (*prog->p) prog->p++; break;
     case L_ZERO: while (*prog->p) prog->p--; break;
     case OP_TYPES: diag_err(t, "%s", "Unreachable!\n"); return false;
-    default: return false; break;
+    default: assert(0 && "Unreachable!\n"); return false; break;
     }
     if (!next_op(prog)) break;
   }
@@ -1217,29 +1321,31 @@ BF_DEF bool compile_optimized_program_fasm(Program *prog, Tokenizer *t) {
   fprintf(f, "%smov rsi,%stape\n", tab, spc);
   if (verbose) fprintf(f, ";; Reads and writes operate on only one character, so just move 1 to rdx once and for all.\n");
   fprintf(f, "%smov rdx,%s1\n", tab, spc);
-  while (true) {
-    to_token(t, prog->op->t);
-    count = prog->op->count;
+  for (size_t i = 0; i < prog->count; i++) {
+    Op *op = prog->items + i;
+    to_token(t, op->t);
+    /* size_t count = op->count; */
     prog->p = tape + pointer;
     if (pointer > max) max = pointer;
     if (noisy)
       fprintf(f, ";; %s:%zu:%zu: %c\n", t->path, t->t->row, t->t->col, t->t->c);
-    switch (prog->op->type) {
-    case RIGHT: 
-    case LEFT: if (!gen_optimized_move_pointer_fasm(prog, t, f)) return false; break;
+    switch (op->type) {
+    case RIGHT:
+    case LEFT:
+      if (!gen_optimized_move_pointer_fasm(prog, t, f)) return false; break;
     case INC:
-    case DEC: gen_optimized_arithmetic_fasm(prog, t, f); break;
+    case DEC: gen_optimized_arithmetic_fasm(prog, f); break;
     case OUT: gen_write_fasm(t, f); break;
     case IN: gen_read_fasm(t, f); break;
-    case LOOP_BGN: gen_lp_bgn_fasm(t, f, prog->op->jmp, prog->index); break;
-    case LOOP_END: gen_lp_end_fasm(t, f, prog->op->jmp, prog->index); break;
+    case LOOP_BGN: gen_lp_bgn_fasm(t, f, op->jmp, prog->index); break;
+    case LOOP_END: gen_lp_end_fasm(t, f, op->jmp, prog->index); break;
     case ZERO:
       if (verbose) fprintf(f, "%s;; Set the current character to 0.\n", tab);
       fprintf(f, "%smov byte%s[rsi],%s0\n", tab, spc, spc);
       break;
     case R_ZERO: case L_ZERO: break; // These don't make sense when compiling.
-    case OP_TYPES: diag_err(t, "%s", "Unreachable!\n"); return false;
-    default: return false; break;
+    case OP_TYPES:
+    default: diag_err(t, "%s", "Unreachable!\n"); return false; break;
     }
     if (!next_op(prog)) break;
   }
@@ -1313,15 +1419,9 @@ BF_DEF bool compile_optimized_program_elf(Program *prog) {
 
   // Point rsi at the tape.
   Bytes start = {0};
-  append_bytes(&start, "\x48\xc7", 2); // MOV
-  append_bytes(&start, "\xc6", 1); // rsi
-  append_bytes(&start, "\0\0\0\0", 4); // tape address, needs to be patched
-  append_bytes(&start, "\x48\xc7", 2); // MOV
-  append_bytes(&start, "\xc2", 1); // rdx
-  append_bytes(&start, "\1\0\0\0", 4); // 1
+  gen_start_elf(&start, true, true);
   
   size_t pointer = 0;
-  /* first_token(t); */
   first_op(prog);
   patch_program_jmp(prog);
   patch_program_jmp_for_binary(prog);
@@ -1330,170 +1430,37 @@ BF_DEF bool compile_optimized_program_elf(Program *prog) {
   size_t bin_jmp = 0;
   size_t count = 0;
   size_t max = 1;
-  
-  while (true) {
-    bin_jmp = prog->op->jmp;
-    count = prog->op->count;
+
+  for (size_t i = 0; i < prog->count; i++) {
+    Op *op = prog->items + i;
+    bin_jmp = op->jmp;
+    count = op->count;
+    if (op->type == R) pointer += count;
+    else if (op->type == L) pointer -= count;
     if (pointer > max) max = pointer;
-    switch (prog->op->type) {
-    case R:
-      // 4881 for ADD
-      // c6 for rsi
-      append_bytes(&insts, "\x48\x81\xc6", 3);
-      
-      for (size_t i = 0; i < 4; i++) {
-        char c = (count >> (i * 8)) & 0xFF;
-        da_append(&insts, c);
-      }
-
-      pointer += count;
-      break;
-    case L:
-      // 4881 for SUB
-      // ee for rsi
-      append_bytes(&insts, "\x48\x81\xee", 3);
-      
-      for (size_t i = 0; i < 4; i++) {
-        char c = (count >> (i * 8)) & 0xFF;
-        da_append(&insts, c);
-      }
-
-      pointer -= count;
-      break;
-    case I:
-      append_bytes(&insts, "\x80\x06", 2); // add [byte] rsi
-      da_append(&insts, (char) (count % 256)); // how much to add
-      break;
-    case D:
-      append_bytes(&insts, "\x80\x2e", 2); // sub [byte] rsi
-      da_append(&insts, (char) (count % 256)); // how much to sub
-      break;
-    case OP_OUT:
-      // mov rax, 1
-      append_bytes(&insts, "\x48\xc7\xc0\1\0\0\0", 7);
-      // mov rdi, 1
-      append_bytes(&insts, "\x48\xc7\xc7\1\0\0\0", 7);
-      // syscall
-      append_bytes(&insts, "\x0f\x05", 2);
-      break;
-    case OP_IN:
-      // mov rax, 0
-      append_bytes(&insts, "\x48\xc7\xc0\0\0\0\0", 7);
-      // mov rdi, 0
-      append_bytes(&insts, "\x48\xc7\xc7\0\0\0\0", 7);
-      // syscall
-      append_bytes(&insts, "\x0f\x05", 2);
-      break;
-    case LP_BGN:
-      // mov rax, QWORD [rsi]
-      append_bytes(&insts, "\x48\x8b\x06", 3);
-      // test al, al
-      append_bytes(&insts, "\x84\xc0", 2);
-      // jz
-      append_bytes(&insts, "\x0f\x84", 2);
-
-      for (size_t i = 0; i < 4; i++) {
-        char c = (bin_jmp >> (i * 8)) & 0xFF;
-        da_append(&insts, c);
-      }
-      break;
-    case LP_END:
-      // mov rax, QWORD [rsi]
-      append_bytes(&insts, "\x48\x8b\x06", 3);
-      // test al, al
-      append_bytes(&insts, "\x84\xc0", 2);
-      // jnz
-      append_bytes(&insts, "\x0f\x85", 2);
-
-      for (size_t i = 0; i < 4; i++) {
-        char c = (bin_jmp >> (i * 8)) & 0xFF;
-        da_append(&insts, c);
-      }
-      break;
-    case ZERO:
-      append_bytes(&insts, "\xc6\x06\x00", 3); // mov byte [rsi], 0
-      break;
-    case R_ZERO: case L_ZERO: break; // these don't make sense when compiling
+    switch (op->type) {
+    case R: case L: gen_optimized_move_pointer_elf(op, &insts); break;
+    case I: case D: gen_optimized_arithmetic_elf(op, &insts); break;
+    case OP_OUT: case OP_IN: gen_read_write_syscall_elf(&insts, op->type); break;
+    case LP_BGN: case LP_END: gen_lp_elf(&insts, op->type, op->jmp); break;
+    case ZERO: gen_zero_elf(&insts); break;
+      /* append_bytes(&insts, "\xc6\x06\x00", 3); // mov byte [rsi], 0 */
+      /* break; */
+    case R_ZERO: case L_ZERO: // these don't make sense when compiling
     case OP_TYPES: default: assert (0 && "unreachable"); break;
-   }
-
-    if (!next_op(prog)) break;
+    }
   }
 
-  // exit with exit code 0
-  append_bytes(&insts, "\x48\xc7\xc0", 3); // mov rax
-  append_bytes(&insts, "\x3c\0\0\0", 4); // 60
-  append_bytes(&insts, "\x48\xc7\xc7", 3); // mov rdi
-  append_bytes(&insts, "\0\0\0\0", 4); // 0
-  append_bytes(&insts, "\x0f\5", 2); // syscall
-
-  // patch entry.p_filesz
-  entry.p_filesz = 176 + start.count + insts.count;
-  entry.p_memsz = entry.p_filesz;
-
-  // patch thdr.vaddr
-  thdr.p_vaddr += entry.p_filesz;
-  thdr.p_paddr = thdr.p_vaddr;
-  thdr.p_offset = entry.p_filesz;
-
+  gen_exit_ok_elf(&insts, false, false);
+  patch_tape_elf(&entry, &thdr, &start, insts.count);
+  if (!write_headers_to_elf(f, entry, thdr)) return false;
   // patch tape size
   thdr.p_filesz = max;
   thdr.p_memsz = max;
-
-  // patch the pointer to the tape.
-  size_t tape_pointer = thdr.p_vaddr;
-  for (size_t i = 0; i < 4; i++) {
-    start.items[3 + i] = (tape_pointer >> (i * 8)) & 0xFF;
-  }
-
-  s = fwrite(&entry, 1, sizeof(entry), f);
-  if (s != sizeof(entry)) {
-    perror("fwrite");
-    return false;
-  }
-  
-  s = fwrite(&thdr, 1, sizeof(thdr), f);
-  if (s != sizeof(thdr)) {
-    perror("fwrite");
-    return false;
-  }
-
-  s = fwrite(start.items, 1, start.count, f);
-  if (s != start.count) {
-    perror("fwrite");
-    return false;
-  }
-  
-  s = fwrite(insts.items, 1, insts.count, f);
-  if (s != insts.count) {
-    perror("fwrite");
-    return false;
-  }
-
-  s = fwrite(tape, 1, thdr.p_filesz, f);
-  if (s != thdr.p_filesz) {
-    perror("fwrite");
-    return false;
-  }
-
+  if (!write_bytes_to_elf(f, &start, &insts, thdr.p_filesz)) return false;
   fclose(f);
   if (noisy) printf("[INFO] Successfully generated binary %s\n", output);
-
-  const char *cmd = "chmod +x";
-  size_t cmd_len = strlen(cmd);
-  size_t command_len = out_len + cmd_len + 1;
-  char *command = malloc(command_len);
-  snprintf(command, command_len, "%s %s", cmd, output);
-  if (noisy) printf("[INFO] %s\n", command);
-  int ret = system(command);
-  if (ret == -1) return false;
-
-  if (run) {
-    if (noisy) printf("[INFO] %s\n", output);
-    ret = system(output);
-    if (ret == -1) return false;
-  }
-  
+  if (!make_executable_and_optionally_run()) return false;
   return true;
 }
 
@@ -1518,217 +1485,46 @@ BF_DEF bool compile_size_optimized_program_elf(Program *prog) {
   }
 
   size_t pointer = 0;
-  /* first_token(t); */
   first_op(prog);
   patch_program_jmp(prog);
-  /* patch_program_jmp_for_binary(prog); */
   bool write = false;
   bool read = false;
   patch_program_jmp_for_size_opt_bin(prog, &write, &read);
   
-  // Point rsi at the tape.
   Bytes start = {0};
-  append_bytes(&start, "\x48\xc7", 2); // MOV
-  append_bytes(&start, "\xc6", 1); // rsi
-  append_bytes(&start, "\0\0\0\0", 4); // tape address, needs to be patched
-  if (write || read) {
-    append_bytes(&start, "\x48\xc7\xc2\1\0\0\0", 7); // mov rdx, 1
-  }
-  if (write) {
-    append_bytes(&start, "\x48\xc7\xc0\1\0\0\0", 7); // mov rax, 1
-    append_bytes(&start, "\x48\xc7\xc7\1\0\0\0", 7); // mov rdi, 1
-  } else if (read) {
-    append_bytes(&start, "\x48\xc7\xc0\0\0\0\0", 7); // mov rax, 0
-    append_bytes(&start, "\x48\xc7\xc7\0\0\0\0", 7); // mov rdi, 0
-  }
+  gen_start_elf(&start, write, read);
   
   Bytes insts = {0};
-  size_t bin_jmp = 0;
-  size_t count = 0;
   size_t max = 1;
-
-  /* while (true) { */
-  for (size_t ip = 0; ip < prog->count; ip++) {
-    Op *op = prog->items + ip;
-    bin_jmp = op->jmp;
-    count = op->count;
+  for (size_t i = 0; i < prog->count; i++) {
+    Op *op = prog->items + i;
+    if (op->type == R) pointer += op->count;
+    else if (op->type == L) pointer -= op->count;
     if (pointer > max) max = pointer;
+
+    /* if (pointer > max) max = pointer; */
     switch (op->type) {
-    case R:
-      if (count > 0xFF) {
-        append_bytes(&insts, "\x48\x81\xc6", 3);      // add rsi
-        for (size_t i = 0; i < 4; i++) {              // how much to add
-          char c = (count >> (i * 8)) & 0xFF;
-          da_append(&insts, c);
-        }
-      } else if (count > 1) {
-        append_bytes(&insts, "\x48\x83\xc6", 3);      // add rsi
-        da_append(&insts, (char) count);              // how much to add
-      } else append_bytes(&insts, "\x48\xff\xc6", 3); // inc rsi
-      pointer += count;
-      break;
-    case L:
-      if (count > 0xFF) {
-        append_bytes(&insts, "\x48\x81\xee", 3);     // sub rsi
-        for (size_t i = 0; i < 4; i++) {             // how much to sub
-          char c = (count >> (i * 8)) & 0xFF;
-          da_append(&insts, c);
-        }
-      } else if (count > 1) {
-        append_bytes(&insts, "\x48\x83\xee", 3);      // sub rsi
-        da_append(&insts, (char) count);              // how much to sub
-      } else append_bytes(&insts, "\x48\xff\xce", 3); // dec rsi
-      pointer -= count;
-      break;
-    case I:
-      if (count > 1) {
-        append_bytes(&insts, "\x80\x06", 2);     // add [byte] rsi
-        da_append(&insts, (char) (count % 256)); // how much to add
-      } else append_bytes(&insts, "\xfe\x06", 2);
-      break;
-    case D:
-      if (count > 1) {
-        append_bytes(&insts, "\x80\x2e", 2);     // sub [byte] rsi
-        da_append(&insts, (char) (count % 256)); // how much to sub
-      } else append_bytes(&insts, "\xfe\x0e", 2);
-      break;
-      
-    case OP_OUT:
-      if (read) {
-        append_bytes(&insts, "\x48\xff\xc0", 3); // inc rax
-        append_bytes(&insts, "\x48\xff\xc7", 3); // inc rdi
-      }
-      append_bytes(&insts, "\x0f\x05", 2); // syscall
-      write = true;
-      read = false;
-      break;
-    case OP_IN:
-      if (write) {
-        append_bytes(&insts, "\x48\xff\xc8", 3); // dec rax
-        append_bytes(&insts, "\x48\xff\xcf", 3); // dec rdi
-      }
-      append_bytes(&insts, "\x0f\x05", 2); // syscall
-      read = true;
-      write = false;
-      break;
-    case LP_BGN:
-      append_bytes(&insts, "\x48\x8b\x1e", 3); // mov rbx, QWORD [rsi]
-      append_bytes(&insts, "\x84\xdb", 2);     // test bl, bl
-      if (bin_jmp > 0x7F) {
-        append_bytes(&insts, "\x0f\x84", 2); // jz
-        for (size_t i = 0; i < 4; i++) {
-          char c = (bin_jmp >> (i * 8)) & 0xFF;
-          da_append(&insts, c);
-        }
-      } else {
-        da_append(&insts, 0x74); // jz
-        char j = bin_jmp & 0xFF;
-        da_append(&insts, j); // lp_end address
-      }
-      break;
-    case LP_END:
-      append_bytes(&insts, "\x48\x8b\x1e", 3); // mov rbx, QWORD [rsi]
-      append_bytes(&insts, "\x84\xdb", 2);     // test bl, bl
-      if (-bin_jmp > 0x80) {
-        append_bytes(&insts, "\x0f\x85", 2); // jnz
-        for (size_t i = 0; i < 4; i++) {
-          char c = (bin_jmp >> (i * 8)) & 0xFF;
-          da_append(&insts, c);
-        }
-      } else {
-        da_append(&insts, 0x75);// jnz
-        char j = bin_jmp & 0xFF;
-        da_append(&insts, j); // lp_end address
-      }
-      break;
-    case ZERO:
-      append_bytes(&insts, "\xc6\x06\x00", 3); // mov byte [rsi], 0
-      break;
-    case R_ZERO: case L_ZERO: break; // these don't make sense when compiling
+    case R: case L: gen_size_optimized_move_pointer_elf(op, &insts); break;
+    case I: case D: gen_size_optimized_arithmetic_elf(op, &insts); break;
+    case OP_OUT: case OP_IN:
+      gen_size_optimized_read_write_syscall_elf(op, &insts, &write, &read); break;
+    case LP_BGN: case LP_END: gen_size_optimized_lp_elf(op, &insts); break;
+    case ZERO: gen_zero_elf(&insts); break;
+    case R_ZERO: case L_ZERO: // these don't make sense when compiling
     case OP_TYPES: default: assert (0 && "unreachable"); break;
     }
   }
-
-  // exit with exit code 0
-  if (write) {
-    append_bytes(&insts, "\x48\x05\x3b\0\0\0", 6); // add rax, 59
-    append_bytes(&insts, "\x48\xff\xcf", 3); // dec rdi
-  } else if (read) {
-    append_bytes(&insts, "\x48\x05\x3c\0\0\0", 6); // add rax, 60
-  } else {
-    append_bytes(&insts, "\x48\xc7\xc0\x3c\0\0\0", 7); // mov rax, 60
-    append_bytes(&insts, "\x48\xc7\xc7\0\0\0\0", 7); // mov rdi, 0
-  }
-
-  append_bytes(&insts, "\x0f\5", 2); // syscall
-
-  // patch entry.p_filesz
-  entry.p_filesz = 176 + start.count + insts.count;
-  entry.p_memsz = entry.p_filesz;
-
-  // patch thdr.vaddr
-  thdr.p_vaddr += entry.p_filesz;
-  thdr.p_paddr = thdr.p_vaddr;
-  thdr.p_offset = entry.p_filesz;
-
+  
+  gen_exit_ok_elf(&insts, write, read);
+  patch_tape_elf(&entry, &thdr, &start, insts.count);
+  if (!write_headers_to_elf(f, entry, thdr)) return false;
   // patch tape size
   thdr.p_filesz = max;
   thdr.p_memsz = max;
-
-  // patch the pointer to the tape.
-  size_t tape_pointer = thdr.p_vaddr;
-  for (size_t i = 0; i < 4; i++) {
-    start.items[3 + i] = (tape_pointer >> (i * 8)) & 0xFF;
-  }
-
-  s = fwrite(&entry, 1, sizeof(entry), f);
-  if (s != sizeof(entry)) {
-    perror("fwrite");
-    return false;
-  }
-  
-  s = fwrite(&thdr, 1, sizeof(thdr), f);
-  if (s != sizeof(thdr)) {
-    perror("fwrite");
-    return false;
-  }
-
-  s = fwrite(start.items, 1, start.count, f);
-  if (s != start.count) {
-    perror("fwrite");
-    return false;
-  }
-  
-  s = fwrite(insts.items, 1, insts.count, f);
-  if (s != insts.count) {
-    perror("fwrite");
-    return false;
-  }
-
-  s = fwrite(tape, 1, thdr.p_filesz, f);
-  if (s != thdr.p_filesz) {
-    perror("fwrite");
-    return false;
-  }
-
+  if (!write_bytes_to_elf(f, &start, &insts, thdr.p_filesz)) return false;
   fclose(f);
   if (noisy) printf("[INFO] Successfully generated binary %s\n", output);
-
-  const char *cmd = "chmod +x";
-  size_t cmd_len = strlen(cmd);
-  size_t command_len = out_len + cmd_len + 1;
-  char *command = malloc(command_len);
-  snprintf(command, command_len, "%s %s", cmd, output);
-  if (noisy) printf("[INFO] %s\n", command);
-  int ret = system(command);
-  if (ret == -1) return false;
-
-  if (run) {
-    if (noisy) printf("[INFO] %s\n", output);
-    ret = system(output);
-    if (ret == -1) return false;
-  }
-  
+  if (!make_executable_and_optionally_run()) return false;
   return true;
 }
 
@@ -1743,7 +1539,6 @@ BF_DEF bool patch_program_jmp(Program *prog) {
   prog->index = point;
   prog->op = prog->items + prog->index;
   return to_op(prog, point);
-  return true;
 }
 
 BF_DEF void patch_program_jmp_for_binary(Program *prog) {
@@ -1814,8 +1609,6 @@ BF_DEF void patch_program_jmp_for_size_opt_bin(Program *prog, bool *w, bool *r) 
       else op->b = 8;
       read = true;
       write = false;
-      
-      /* op->b = 16; */
       break;
     case LP_BGN: case LP_END: op->b = 7; break; // These are patched later.
     case ZERO: op->b = 3; break; // mov byte [rsi], 0 is only 3 bytes.
@@ -1867,7 +1660,7 @@ BF_DEF bool patch_op_jmp(Program *prog) {
   }
 
   prog->op->jmp = jmp;
-
+  
   jmp = prog->index;
 
   if (!to_op(prog, point)) return false;
@@ -1932,85 +1725,14 @@ BF_DEF void patch_op_jmp_for_size_opt_bin(Program *prog) {
   
   prog->op->jmp = bin_jmp;
   to_op(prog, point);
-
-  
-  /* size_t point = prog->index; */
-  /* size_t jmp = prog->op->jmp; */
-  /* size_t bin_jmp = 0; */
-  
-  /* /\* printf("point = %zu\n", point); *\/ */
-  /* /\* printf("jmp = %zu\n", jmp); *\/ */
-  
-  /* for (size_t i = point; i < jmp; i++) { */
-  /*   Op *op = prog->items + i; */
-  /*   bin_jmp += op->b; */
-  /*   /\* printf("%zu: (%s) bin_len = %zu\n", i, token_type_to_cstr(op->type), op->b); *\/ */
-  /* } */
-
-  /* /\* if (bin_jmp + 4 > 0x7F && prog->op->b == 7) { *\/ */
-  /* if (bin_jmp > 0x7F) { */
-  /*   assert(prog->op->b == 7); */
-  /*   prog->op->b += 4; */
-  /*   bin_jmp += 4; */
-  /*   (prog->items + jmp)->b += 4; */
-  /*   assert(prog->op->b == 11); */
-  /*   assert((prog->items + jmp)->b == 11); */
-  /* } */
-  
-  /* assert(bin_jmp > 0 && "jump needs to be positive"); */
-  /* if (prog->op->b == 7) { */
-  /*   /\* printf("bin_jmp = 0x%02lx\n", bin_jmp); *\/ */
-  /*   /\* printf("(char) bin_jmp = %d\n", (char) bin_jmp); *\/ */
-  /*   assert((char) bin_jmp > 0 && "jump needs to be positive"); */
-  /* } else assert((long) bin_jmp > 0 && "jump needs to be positive"); */
-
-  /* /\* printf("bin_jmp  = 0x%08lx\n", bin_jmp); *\/ */
-  /* /\* if (bin_jmp < 0x80) printf("short\n"); else printf("long\n"); // 0x80 = 128 *\/ */
-  /* /\* printf("prog->op->b = %zu\n", prog->op->b); *\/ */
-  /* prog->op->jmp = bin_jmp; */
-
-  /* to_op(prog, jmp); */
-  /* /\* bin_jmp = 0; *\/ */
-  
-  /* /\* for (size_t i = jmp; i > point; i--) { *\/ */
-  /* /\*   Op *op = prog->items + i; *\/ */
-  /* /\*   bin_jmp -= op->b; *\/ */
-  /* /\* } *\/ */
-
-  /* /\* if (-bin_jmp + 4 > 0x80 && prog->op->b == 7) { *\/ */
-  /* /\*   prog->op->b += 4; *\/ */
-  /* /\*   bin_jmp -= 4; *\/ */
-  /* /\* } *\/ */
-  /* bin_jmp = -bin_jmp; */
-  
-  /* prog->op->jmp = bin_jmp; */
-  /* to_op(prog, point); */
-  /* /\* printf("-bin_jmp = %zu\n", -bin_jmp); *\/ */
-  /* /\* printf("prog->op->jmp = %zu\n", prog->op->jmp); *\/ */
-  /* /\* assert(-bin_jmp == (prog->op->jmp) && "what?"); *\/ */
-  /* /\* if (-bin_jmp != (prog->op->jmp)) { *\/ */
-  /*   /\* printf("-bin_jmp      = %zu\n", -bin_jmp); *\/ */
-  /*   /\* printf("prog->op->jmp = %zu\n", prog->op->jmp); *\/ */
-  /*   /\* printf("prog->op->b   = %zu\n", prog->op->b); *\/ */
-  /* /\* } *\/ */
-  /* if (prog->op->b == 7) { */
-  /*   /\* printf("bin_jmp = 0x%02lx\n", bin_jmp); *\/ */
-  /*   /\* printf("(char) bin_jmp = %d\n", (char) bin_jmp); *\/ */
-  /*   assert((char) bin_jmp < 0 && "jump needs to be negative"); */
-  /* } else assert((long) bin_jmp < 0 && "jump needs to be negative"); */
-
-  /* /\* printf("-bin_jmp = 0x%08lx\n", -bin_jmp); *\/ */
-  /* /\* if (-bin_jmp <= 0x80) printf("short\n"); else printf("long\n"); // 0x80 = 128 *\/ */
-  /* /\* printf("prog->op->b = %zu\n", prog->op->b); *\/ */
-  /* /\* printf("--------------------------------------------------\n"); *\/ */
 }
 
 BF_DEF bool gen_optimized_move_pointer_fasm(Program *prog, Tokenizer *t, FILE *f) {
   bool right = prog->op->type == R;
   
-  if (verbose) fprintf(f, "%s;; %s rsi, which points to the tape, by %zu.\n", tab, right ? "increment" : "decrement", count);
-  fprintf(f, "%s%s rsi,%s%zu\n", tab, right ? "add" : "sub", spc, count);
-  if (right) pointer += count; else pointer -= count;
+  if (verbose) fprintf(f, "%s;; %s rsi, which points to the tape, by %zu.\n", tab, right ? "increment" : "decrement", prog->op->count);
+  fprintf(f, "%s%s rsi,%s%zu\n", tab, right ? "add" : "sub", spc, prog->op->count);
+  if (right) pointer += prog->op->count; else pointer -= prog->op->count;
   
   if (pointer >= TAPE_SIZE) {
     diag_err(t, "Stack overflow! The allocated array has only %d elements, no more!\n", TAPE_SIZE);
@@ -2023,11 +1745,83 @@ BF_DEF bool gen_optimized_move_pointer_fasm(Program *prog, Tokenizer *t, FILE *f
   return true;
 }
 
-BF_DEF void gen_optimized_arithmetic_fasm(Program *prog, Tokenizer *t, FILE *f) {
+BF_DEF void gen_optimized_arithmetic_fasm(Program *prog, FILE *f) {
   bool add = prog->op->type == I;
-  if (verbose) fprintf(f, "%s;; %s the current character by %zu.\n", tab, add ? "increment" : "decrement", count);
-  fprintf(f, "%s%s byte%s[rsi],%s%zu\n", tab, add ? "add" : "sub", spc, spc, count);
-  if (add) (*prog->p) += count; else (*prog->p) -= count;
+  if (verbose) fprintf(f, "%s;; %s the current character by %zu.\n", tab, add ? "increment" : "decrement", prog->op->count);
+  fprintf(f, "%s%s byte%s[rsi],%s%zu\n", tab, add ? "add" : "sub", spc, spc, prog->op->count);
+  if (add) (*prog->p) += prog->op->count; else (*prog->p) -= prog->op->count;
+}
+
+BF_DEF void gen_optimized_move_pointer_elf(Op *op, Bytes *s) {
+  append_bytes(s, "\x48\x81", 2); // add or sub, seemingly inferred by the next byte
+  if (op->type == R) da_append(s, 0xC6); // rsi
+  else da_append(s, 0xEE); // rsi
+  gen_little_endian(s, op->count, 4); // how much to add or sub
+}
+
+BF_DEF void gen_size_optimized_move_pointer_elf(Op *op, Bytes *s) {
+  if (op->count > 0xFF) {
+    gen_optimized_move_pointer_elf(op, s);
+  } else if (op->count > 1) {
+    append_bytes(s, "\x48\x83", 2); // add or sub, inferred by the nest byte
+    if (op->type == R) da_append(s, 0xC6); // rsi
+    else da_append(s, 0xEE); // rsi
+    da_append(s, (char) op->count); // how much to sub
+  } else {
+    gen_move_pointer_elf(s, op->type);
+  }
+}
+
+BF_DEF void gen_optimized_arithmetic_elf(Op *op, Bytes *s) {
+  da_append(s, 0x80); // add or sub [byte], seemingly inferred by the next byte
+  if (op->type == I) da_append(s, 0x06); // byte [rsi].
+  else da_append(s, 0x2E); // byte [rsi].
+  da_append(s, (char) (op->count % 256)); // how much to add or sub
+}
+
+BF_DEF void gen_size_optimized_arithmetic_elf(Op *op, Bytes *s) {
+  if (op->count > 1) gen_optimized_arithmetic_elf(op, s);
+  else gen_arithmetic_elf(s, op->type);
+}
+
+BF_DEF void gen_zero_elf(Bytes *s) {
+  append_bytes(s, "\xc6\x06\x00", 3); // mov byte [rsi], 0
+}
+
+BF_DEF void gen_size_optimized_read_write_syscall_elf(Op *op, Bytes *s, bool *w, bool *r) {
+  if (op->type == OP_OUT) {
+    if (*r) {
+      append_bytes(s, "\x48\xff\xc0", 3); // inc rax
+      append_bytes(s, "\x48\xff\xc7", 3); // inc rdi
+    }
+  } else {
+    if (*w) {
+      append_bytes(s, "\x48\xff\xc8", 3); // dec rax
+      append_bytes(s, "\x48\xff\xcf", 3); // dec rdi
+    }
+  }
+  gen_syscall_elf(s);
+  if (*w) *w = !*w;
+  if (*r) *r = !*r;
+}
+
+BF_DEF void gen_size_optimized_lp_elf(Op *op, Bytes *s) {
+  append_bytes(s, "\x48\x8b\x1e", 3); // mov rbx, QWORD [rsi]
+  append_bytes(s, "\x84\xdb", 2);     // test bl, bl
+  bool bgn = op->type == LP_BGN;
+  size_t bin_jmp = op->jmp;
+  bool long_form = bgn && bin_jmp > 0x7F || !bgn && -bin_jmp > 0x80;
+  if (long_form) {
+    da_append(s, 0x0F); // jz or jnz, seemingly inferred by the next byte
+    if (bgn) da_append(s, 0x84); // jz
+    else da_append(s, 0x85); // jnz
+    gen_little_endian(s, bin_jmp, 4); // how many bytes to jump
+  } else {
+    if (bgn) da_append(s, 0x74); // jz
+    else da_append(s, 0x75); // jnz
+    char j = bin_jmp & 0xFF;
+    da_append(s, j); // // how many bytes to jump
+  }
 }
 
 BF_DEF bool check_optimized_program_bounds(const Program *prog) {
