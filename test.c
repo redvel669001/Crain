@@ -107,17 +107,21 @@ int main(int argc, char **argv) {
 
 void compile_test(const char *test) {
   size_t test_len = strlen(test) + 1;
-  len = c_len + src_len + test_len + build_len + test_len + 120;
+  len = c_len + src_len + test_len + build_len + test_len + 180;
   cmd = malloc(len);
-  /* snprintf(cmd, len, "%s %s%s.bf -n -c -o %s%s", compiler, src, test, build, test); */
-  snprintf(cmd, len, "%s %s%s.bf %s%s%s%s%s%s%s%s%s%s%s-o %s%s",
+  snprintf(cmd, len, "%s %s%s.bf %s%s%s%s%s%s%s%s%s%s%s",
            compiler, src, test,
            opt ? "--opt " : "", size_opt ? "-so " : "",
            noisy ? "-n " : "", simulate ? "-s " : "",
            compile ? "-c " : "", direct_to_binary  ? "-b " : "",
            verbose ? "-v " : "", extra_verbose ? "-e " : "",
            readable ? "-re " : "", dump_asm ? "-da " : "",
-           run ? "-r " : "", build, test);
+           run ? "-r " : "");
+  if (compile) {
+    char *command = malloc(len);
+    snprintf(command, len, "%s-o %s%s", cmd, build, test);
+    cmd = command;
+  }
   printf("[INFO] %s\n", cmd);
 }
 
