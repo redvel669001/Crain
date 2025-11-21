@@ -37,6 +37,8 @@ const char *name = "crain";
 
 #define DA_INIT_CAPACITY 1024
 
+// Largely copied from the nob_da_append macro in nob.h, albeit highly simplified.
+// https://github.com/tsoding/nob.h/blob/main/nob.h
 #define da_append(da, item)                                             \
   do {                                                                  \
     if ((da)->capacity < (da)->count + 1) {                             \
@@ -356,6 +358,10 @@ int main(int argc, char **argv) {
   return 0;
 }
 
+// Largely copied from the nob_da_append_many macro in nob.h, mildly modified:
+// 1. It is simplified.
+// 2. It is implemented as a function, rather than a macro, since it sees no real use in this codebase, other than appending bytes.
+// https://github.com/tsoding/nob.h/blob/main/nob.h
 BF_DEF void append_bytes(Bytes *s, const char *bytes, size_t len) {
   if (s->count + len > s->capacity) {
     if (s->capacity == 0) {
