@@ -34,8 +34,15 @@ If you don't want this default behavior, either in terms of [crain] acting as an
 - `-r` or `--run`: if the Brainfuck source code has been compiled into a native executable file, run that file.
 - `-da` or `--dump-asm`: if the Brainfuck source code has been translated into assembly, do not go further to compile the assembly into a native executable file. This option is kinda useless at the moment, since the assembly files generated aren't automatically deleted, anyway.
 - `-b` or `--binary`: generate a binary ELF file without using fasm. With this flag, [crain] will translate the Brainfuck source code directly into a binary ELF file, rather than translate it to assembly and then use fasm to compile the assembly into binary.
+- `-so` or `--size_opt`: generate a binary ELF file without using fasm, after optimizing the Brainfuck source code, and while attempting to minimize the size of the final binary.
 
 * Credits
+** Fasm
+This project wouldn't have been very possible without fasm (https://flatassembler.net/), both in generating assembly and in examining the binary translation of various instructions.
+** Nob
+While not used directly as the build system for this project, some code from nob.h has been copied, generally in simplified form, mainly macros.
+Nob repo: https://github.com/tsoding/nob.h/blob/main/nob.h
+** Brainfuck Tests Source Code
 - bf_to_c.bf was taken from https://gist.github.com/roachhd/dce54bec8ba55fb17d3a
 - hello_world.bf was taken from https://gist.github.com/anilsathyan7/e06373fc1d1293fcaf2ef7765d415e62
 - main.bf was written by me
